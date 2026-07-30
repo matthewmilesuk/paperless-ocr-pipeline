@@ -39,15 +39,16 @@ original plan):
 - docker-compose scaffold (web, worker, redis, samba, watcher) and a
   Dockerfile that builds.
 - **All eight pipeline stages are real, not stubs**, each covered by
-  tests in `pipeline/tests.py`. **This does not mean the pipeline has
-  ever been run end to end against a real scan** — every stage is
-  tested in isolation (real tools where it matters; only Google
-  Document AI is mocked, since that costs real money per call), but
-  nothing has yet exercised the full chain, `pipeline.run.run_pipeline()`,
-  against one actual document start to finish. That's the next real
-  milestone — a genuinely different thing from "every stage
-  individually works," and not something to claim done based on this
-  list:
+  tests in `pipeline/tests.py`. **`pipeline.run.run_pipeline()` has now
+  been run once, successfully, end to end against a real scan uploaded
+  through the web UI** — real Document AI call, real ocrmypdf
+  orient/pdfa passes, real veraPDF validation (compliant), delivered to
+  `SCAN_OUTPUT_DIR` with the `Job` marked `done` and no leftover
+  intermediate files. That's one confirmed real run, not a guarantee:
+  there's still no failure handling between stages (see below), and it
+  hasn't been exercised against edge cases like a multi-page or rotated
+  document, or one that actually fails PDF/A validation. Don't read "one
+  successful run" as "production ready":
   - `ingest.py` — a small validation gate, not a transformation:
     confirms the input genuinely opens as a PDF via `pikepdf` (not a
     `.pdf`-extension sniff) and has at least one page. Three distinct,
@@ -89,11 +90,11 @@ original plan):
     this job's intermediate pipeline files, since no earlier stage does.
 
 **Still missing / not working yet, even though every stage is implemented:**
-- **No real end-to-end run against an actual scan has been done.** Every
-  `pipeline/*.py` stage has its own tests, but `run_pipeline()` as a
-  whole, driving a real document from Samba-drop or upload through to a
-  delivered PDF/A, has not been exercised. That's the next real
-  milestone.
+- **Only one real end-to-end run has been done, via the web upload path,
+  on one well-formed document.** The Samba-drop (watcher) path hasn't
+  been exercised this way, and neither has any document that hits a
+  real failure partway through — see the next point. Treat "it worked
+  once" as encouraging, not as broad coverage.
 - **No failure handling between stages.** `run_pipeline()` doesn't catch
   exceptions from `ingest`/`cleanup`/`orient`/`ocr`/`reassemble`/`pdfa` —
   an exception from any of those propagates uncaught and the job is left
@@ -314,19 +315,29 @@ which must already exist (create it with `manage.py createsuperuser`).
 ## Getting Started
 
 1. Copy `.env.example` to `.env` and fill in your values (GCP credentials,
-   processor IDs, SMTP settings, folder paths, `DEFAULT_JOB_OWNER_USERNAME`).
+   processor IDs, SMTP settings, folder paths, `DEFAULT_JOB_OWNER_USERNAME`)
+   — `./setup.sh` will do this for you with placeholder values if you skip
+   it, but real GCP/SMTP/Samba values are still needed before the pipeline
+   can actually run.
 2. Drop your GCP service account key JSON where `.env` points
    `GOOGLE_APPLICATION_CREDENTIALS` to.
-3. Run `./setup.sh` to build and start the stack.
-4. Create yourself an account: `docker compose exec web python manage.py
-   createsuperuser` (or `python manage.py createsuperuser` if running
-   outside Docker).
-5. Log in at the web UI with that account. **On first login you're
-   redirected straight to 2FA setup** — scan the QR code with an
+3. Run `./setup.sh`. It builds the image, starts `web` + `redis` (not
+   `samba`/`watcher` yet — those need the real config from steps 1-2
+   first), and waits for migrations to finish (these run automatically on
+   every `web` startup — see `docker-compose.yml` — not a manual step).
+   Then it checks whether a superuser account already exists; if not, it
+   runs `manage.py createsuperuser` **interactively**, so you choose your
+   own username and password on the spot. Nothing is pre-filled or baked
+   into this repo — every fresh install gets its own credentials, not a
+   shared default.
+4. Log in at `http://localhost:8000/` with that account. **On first login
+   you're redirected straight to 2FA setup** — scan the QR code with an
    authenticator app (Google Authenticator, Authy, etc.) and save the
    generated backup codes. This is required before you can reach uploads
    or job status; a password alone isn't enough (see "Authentication &
    Access Control" below).
-6. Visit the web UI to upload a document, or drop a PDF into the Samba
-   input share. Either way a `Job` row gets created and the file saved —
-   actual OCR/PDF-A processing isn't implemented yet (see "Status" above).
+5. Visit the web UI to upload a document, or drop a PDF into the Samba
+   input share once it's running. Either way a `Job` row gets created and
+   the file saved, then run through the full OCR/PDF-A pipeline — see
+   "Status" above for what's actually been verified working end to end
+   versus tested in isolation.

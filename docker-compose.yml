@@ -3,7 +3,17 @@ version: "3.9"
 services:
   web:
     build: .
-    command: gunicorn config.wsgi:application --bind 0.0.0.0:8000
+    # Migrations run automatically here, every startup, before gunicorn --
+    # so `docker compose up` always ends with an up-to-date schema rather
+    # than that being a manual step someone has to discover is missing
+    # (e.g. via a 500 on the login page). --noinput so this can never hang
+    # container startup waiting on a prompt. Scoped to `web` only, not
+    # worker/watcher too, to avoid two containers running migrate against
+    # the same SQLite file concurrently on a fresh `docker compose up` (no
+    # depends_on ordering between them) -- worker/watcher don't touch the
+    # DB until an actual job runs, by which point web's migrate has long
+    # since finished in practice.
+    command: sh -c "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8000"
     ports:
       - "8000:8000"
     volumes:
