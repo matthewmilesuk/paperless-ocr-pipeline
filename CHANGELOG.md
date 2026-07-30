@@ -7,6 +7,60 @@ Versioning is semantic-ish and appropriate to a pre-1.0, single-developer
 scaffold — a MINOR bump per meaningful milestone, PATCH reserved for fixes
 within one.
 
+## [0.8.0] - 2026-07-30
+
+First pipeline stages touching real external tools (tesseract,
+ghostscript, pngquant) rather than pure Python logic or mocked APIs:
+`pipeline/orient.py` is added and `pipeline/pdfa.py` is implemented.
+
+### Added
+- `pipeline/orient.py` — new stage 3 (between `cleanup.py` and
+  `ocr.py`): runs `ocrmypdf --deskew --rotate-pages` on the cleaned PDF
+  *before* Document AI or `reassemble.py` add any text layer. Resolves
+  the sequencing conflict investigated last session: run at the
+  `pdfa.py` stage as originally planned, `--deskew`/`--rotate-pages`
+  would have been a silent no-op on every page, every run — confirmed by
+  reading ocrmypdf's actual source (`is_ocr_required()` returns `False`,
+  logging "skipping all processing on this page", for any page with an
+  existing text layer under `--skip-text`).
+  - `--rotate-pages` needs a text-orientation signal, so ocrmypdf runs
+    tesseract internally as a side effect and embeds a throwaway
+    invisible text layer. Stripped before handing off to `ocr.py`.
+  - Verified concretely that ocrmypdf's own `--mode strip` does NOT
+    remove this: both of ocrmypdf's renderers wrap OCR text in a Form
+    XObject that its built-in `strip_invisible_text()` doesn't recurse
+    into, so it silently no-ops. `orient.py` reimplements that
+    algorithm, generalized to handle nested XObjects — verified with an
+    independent scan function, not the same code that did the
+    stripping.
+- `pipeline/pdfa.py` implemented: `--output-type pdfa --skip-text
+  --optimize 3`, deliberately no `--rotate-pages`/`--deskew` (that's
+  `orient.py`'s job now, and would be a no-op here regardless).
+- `pipeline/tests.py` — 4 new tests, deliberately not mocking ocrmypdf
+  (that's the whole thing under test): a 90°-rotated page comes out
+  upright (checked by rendering), a 6°-skewed page is measurably
+  straightened (via an independent projection-profile skew estimator,
+  validated against known angles before use), no invisible text
+  survives `orient()`'s strip step (independent scan, including nested
+  XObjects), and `pdfa.py` produces PDF/A-2b-flagged output that still
+  preserves the existing text layer.
+
+### Fixed
+- Dockerfile was missing `pngquant`, which `--optimize 3` hard-requires
+  (confirmed: `MissingDependencyError`, not a soft warning) — found by
+  actually running `pdfa.py` locally without it. Added alongside the
+  existing `ghostscript`/`tesseract-ocr`/`qpdf`; rebuilt the image and
+  re-ran the full test suite in the container (not just the local venv,
+  where these tools were installed manually for testing) to confirm the
+  fix holds there too.
+
+### Changed
+- `pipeline/run.py`: `orient()` wired in between `cleanup()` and
+  `ocr_document()` — `ocr.ocr_document()` and `reassemble.reassemble()`
+  now both operate on `orient()`'s output, not `cleanup()`'s directly.
+- `PROJECT_SPEC.md`/`AGENTS.md`/`README.md` pipeline stage lists
+  renumbered (1–8) to include the new `orient.py` stage.
+
 ## [0.7.0] - 2026-07-30
 
 `pipeline/reassemble.py` is implemented and tested; `pipeline/split.py`
