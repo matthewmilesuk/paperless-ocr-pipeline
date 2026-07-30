@@ -47,9 +47,9 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
    code path regardless of entry point.
 
 2. **Cleanup pass (custom blank-page detection)**
-   - Blank page removal only — deskew/auto-rotate now happens at the
-     PDF/A conversion stage (stage 6), via `ocrmypdf` flags. See
-     "Decisions Changed" below for why this moved.
+   - Blank page removal only. Deskew/auto-rotate is a separate stage
+     (stage 3, below) — see "Decisions Changed" for why it's not part of
+     cleanup and not part of the PDF/A conversion stage either.
    - Each page is rasterized and measured for ink/pixel coverage.
      Confidently-blank pages (≈ under 0.5% ink coverage) are dropped
      automatically. Borderline pages (≈ 0.5–3%) are **kept in the final
@@ -57,11 +57,22 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
      review, since a false-positive blank-page drop is unrecoverable once
      the source paper is shredded. Threshold is configurable.
 
-3. **OCR — Google Document AI**
+3. **Orient (deskew + auto-rotate)** — via `ocrmypdf` (`--deskew
+   --rotate-pages`), run here, *before* Document AI ever sees the
+   document. See "Decisions Changed" for why this can't happen later:
+   ocrmypdf skips all per-page processing (not just OCR) on pages that
+   already have a text layer, so this has to run before any text layer
+   exists at all. `--rotate-pages` needs a text-orientation signal, so
+   ocrmypdf runs its own OCR engine (tesseract) internally as a side
+   effect and embeds a throwaway invisible text layer — that layer is
+   stripped immediately after orienting, before this stage hands off to
+   Document AI, so it never lands in the final document.
+
+4. **OCR — Google Document AI**
    - Processor: Enterprise Document OCR
    - Cost: ~$1.50 per 1,000 pages (current tier, well under the
      5,000,000 pages/month threshold for this project's volume)
-   - Sends the cleaned PDF directly to Document AI's synchronous process
+   - Sends the oriented PDF directly to Document AI's synchronous process
      endpoint (one API call for the whole document — Document AI
      segments pages itself internally; there is no separate page-image
      splitting step before this). Output: the full Document AI response,
@@ -77,33 +88,43 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
      processing (via Cloud Storage, up to 500 pages) would lift this cap
      but isn't built yet — see "Things Deliberately Decided Against".
 
-4. **Reassemble + overlay** — adds Document AI's recognized text as an
-   invisible (searchable, not painted) layer directly onto the cleaned
+5. **Reassemble + overlay** — adds Document AI's recognized text as an
+   invisible (searchable, not painted) layer directly onto the oriented
    PDF's own pages via `pikepdf.Page.add_overlay()` — no rasterized page
-   images, no intermediate split step (see "Decisions Changed" below for
-   why `pipeline/split.py` was removed). Positioning uses Document AI's
+   images, no intermediate split step (see "Decisions Changed" for why
+   `pipeline/split.py` was removed). Positioning uses Document AI's
    normalized bounding boxes against each page's actual size and
    rotation (read from the PDF itself, not assumed from Document AI's
-   own dimension data), so the overlay lands correctly regardless of the
-   scan's resolution or a page's `/Rotate` value. Page order and content
-   are otherwise untouched — only text is added.
+   own dimension data). Page order and content are otherwise untouched —
+   only text is added.
 
-5. **PDF/A conversion** — via `ocrmypdf`, called directly:
+6. **PDF/A conversion** — via `ocrmypdf`, called directly:
    - `--output-type pdfa`
-   - `--rotate-pages` / `--deskew` — this is where auto-rotation and
-     deskew actually happen (moved here from the cleanup pass; see
-     "Decisions Changed" below)
+   - `--skip-text` — required, not optional: the page already has a text
+     layer (from stage 5) by this point, and without `--skip-text`
+     ocrmypdf raises an error on the first page it finds with existing
+     text. Deliberately **no** `--rotate-pages`/`--deskew` here — that
+     already happened in stage 3, and per the same skip-all-processing
+     behavior, those flags would be silent no-ops at this point in the
+     pipeline anyway (see "Decisions Changed").
    - `--optimize 3` for file size reduction (JBIG2 for bitonal content,
      smarter JPEG handling for color) — this is where file size gets
      controlled, NOT by downscaling the source scan. The 400 DPI color
      source is the archival "source of truth" and should never be
      pre-shrunk before this point.
+   - **Known infra gap:** `--optimize 3` requires `pngquant`, which is
+     not currently installed in the Dockerfile (confirmed by actually
+     running this locally without it — hard failure, not a soft
+     warning). `jbig2` is also recommended for this optimize level but
+     only produces a warning, not a failure, if missing. `pngquant`
+     needs adding to the Dockerfile before this stage will actually work
+     end to end in the container.
 
-6. **Validate — veraPDF** — confirms actual PDF/A compliance. If validation
+7. **Validate — veraPDF** — confirms actual PDF/A compliance. If validation
    fails, the file does NOT proceed to the output folder. It's moved to a
    `failed/` folder with a log entry for manual review instead.
 
-7. **Output** — finished PDF/A lands in the folder Paperless-NGX watches.
+8. **Output** — finished PDF/A lands in the folder Paperless-NGX watches.
 
 ## Processing Mode
 
@@ -157,9 +178,11 @@ just usable on this one machine.
   cover what this project needs:
   - Its rotation endpoint only supports fixed 90-degree increments, not
     auto skew/orientation detection. `ocrmypdf`'s own `--deskew` and
-    `--rotate-pages` flags do this properly and were always going to run
-    at the PDF/A conversion stage anyway (stage 5) — nothing is lost by
-    dropping Stirling for this; that work just moves to `pdfa.py`.
+    `--rotate-pages` flags do this properly, so nothing is lost by
+    dropping Stirling for this. (At the time of this decision, the plan
+    was to run those flags at the PDF/A conversion stage; that moved
+    again once `pdfa.py` was actually built — see the `pipeline/orient.py`
+    entry below for why.)
   - Its remove-blanks endpoint is binary (delete or don't), with no way
     to express the "confidently blank → auto-drop, borderline → keep and
     log" requirement (stage 2), and no per-page report of what it
@@ -188,6 +211,30 @@ just usable on this one machine.
   the invisible text layer directly onto them. Nothing in the pipeline
   needed rasterized page images once both facts were confirmed, so the
   stage was removed rather than kept as unused scaffolding.
+- **`pipeline/orient.py` added, deskew/auto-rotate moved out of
+  `pdfa.py`.** The plan (see the Stirling entry above) was for `pdfa.py`
+  to run `--deskew --rotate-pages` as part of PDF/A conversion, after
+  `reassemble.py` had already added Document AI's text layer. Checked
+  this against ocrmypdf's actual source before building `pdfa.py`, not
+  just its docs: `is_ocr_required()` (`ocrmypdf/_pipeline.py`) returns
+  `False` — logging "skipping all processing on this page" — for any
+  page that already has text, under `--skip-text` (required, since
+  without it ocrmypdf aborts outright on a page with existing text).
+  `process_page()`, where both `--deskew` and `--rotate-pages` detection
+  actually happen, is never called for such pages. So running those
+  flags at the `pdfa.py` stage as originally planned would have been a
+  silent no-op on every page, every run — not a misalignment risk, a
+  dead feature. Moved deskew/auto-rotate to a new stage 3
+  (`pipeline/orient.py`), running before Document AI/`reassemble.py` add
+  any text layer. `--rotate-pages` needs a text-orientation signal, so
+  ocrmypdf runs tesseract internally as a side effect and embeds a
+  throwaway invisible text layer; that gets stripped before this stage
+  hands off to `ocr.py`. Also found (again, by checking real output, not
+  assuming): ocrmypdf's own `--mode strip` doesn't remove this, because
+  ocrmypdf's default and sandwich renderers both wrap OCR text in a Form
+  XObject that `strip_invisible_text()` doesn't recurse into —
+  `orient.py` reimplements that function's algorithm generalized to
+  handle nested XObjects.
 
 ## Open Questions / To Be Decided
 

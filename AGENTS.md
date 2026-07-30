@@ -52,9 +52,10 @@ once a validated PDF/A lands in the output folder.
 pipeline/
   ingest.py      - watcher/upload hands off a raw scan here
   cleanup.py     - custom blank-page detection (rasterize + ink coverage)
+  orient.py      - ocrmypdf --deskew --rotate-pages, BEFORE any text layer exists
   ocr.py         - calls Google Document AI (sync, <=15 pages), returns OcrResult
-  reassemble.py  - invisible text overlay onto cleaned_path's own pages (no split step)
-  pdfa.py        - ocrmypdf: --output-type pdfa, --rotate-pages, --deskew, --optimize
+  reassemble.py  - invisible text overlay onto oriented_path's own pages (no split step)
+  pdfa.py        - ocrmypdf: --output-type pdfa, --skip-text, --optimize (no rotate/deskew here)
   validate.py    - veraPDF check; failure -> failed/ folder, not output/
   output.py      - writes to the folder Paperless-NGX watches
   run.py         - orchestrates the above, in this order
@@ -155,15 +156,29 @@ stubs tied to the spec, not working code. Don't assume a stage works
 because the file exists and has the right signature; check for
 `NotImplementedError` or a TODO before building on top of it.
 
-`pipeline/cleanup.py`, `pipeline/ocr.py`, and `pipeline/reassemble.py` are
-the exceptions: all three are implemented and tested (`pipeline/tests.py`).
+`pipeline/cleanup.py`, `pipeline/orient.py`, `pipeline/ocr.py`,
+`pipeline/reassemble.py`, and `pipeline/pdfa.py` are the exceptions: all
+five are implemented and tested (`pipeline/tests.py`).
 `pipeline/split.py` no longer exists — see below.
 
 - `cleanup.py` rasterizes each page via `pdf2image`, measures ink
   coverage, drops confidently-blank pages, and logs borderline ones as
   `ingest.models.BorderlinePage`. Returns `CleanupResult` (cleaned PDF
   path + per-stage counts), not a bare `Path`.
-- `ocr.py` sends the cleaned PDF straight to Document AI's *synchronous*
+- `orient.py` runs `ocrmypdf --deskew --rotate-pages` on the cleaned PDF
+  — **before** Document AI or `reassemble.py` add any text layer, since
+  ocrmypdf skips all per-page processing (not just OCR) on pages that
+  already have text (verified against ocrmypdf's actual source, not just
+  its docs — see PROJECT_SPEC.md "Decisions Changed"). Strips the
+  throwaway tesseract text layer `--rotate-pages` embeds as a side
+  effect before handing off — **ocrmypdf's own `--mode strip` does not
+  do this correctly** (confirmed concretely: both of ocrmypdf's
+  renderers wrap OCR text in a Form XObject that the built-in
+  `strip_invisible_text()` doesn't recurse into, so it silently no-ops);
+  `orient.py` reimplements that function generalized to handle nested
+  XObjects. Don't assume `--mode strip` works elsewhere in this codebase
+  without re-checking this.
+- `ocr.py` sends the oriented PDF straight to Document AI's *synchronous*
   process endpoint in one call (not one call per page — Document AI
   handles page segmentation itself). Raises
   `ocr.DocumentTooLongForSyncOCR` without calling the API at all for
@@ -174,7 +189,7 @@ the exceptions: all three are implemented and tested (`pipeline/tests.py`).
   suite, ever** (see "Running tests" above for the one deliberate,
   billable exception: `scripts/smoke-test-ocr.py`).
 - `reassemble.py` overlays `OcrResult`'s text as an invisible (Tr 3)
-  layer directly onto `cleaned_path`'s own pages via
+  layer directly onto the oriented PDF's own pages via
   `pikepdf.Page.add_overlay()` — no rasterized page images, no
   `split.py`. Positioning uses Document AI's `normalized_vertices`
   (resolution-independent) against each page's real MediaBox size and
@@ -184,9 +199,21 @@ the exceptions: all three are implemented and tested (`pipeline/tests.py`).
   confirming a token lands in the visually-correct image quadrant for
   all four rotation values) **but not verified against a real Document
   AI response for an actually-rotated scan** — that would need a real,
-  billable API call that hasn't been made. See `reassemble.py`'s module
-  docstring for the full caveat before trusting this blindly on a
-  rotated real-world document.
+  billable API call that hasn't been made. In practice, `orient.py`
+  running first means most pages reach this stage with `/Rotate == 0`
+  anyway; this caveat mainly matters for a page that ends up rotated for
+  some other reason. See `reassemble.py`'s module docstring for the full
+  caveat before trusting this blindly on a rotated real-world document.
+- `pdfa.py` runs `ocrmypdf --output-type pdfa --skip-text --optimize 3`
+  — deliberately no `--rotate-pages`/`--deskew` (that's `orient.py`'s
+  job now; see above for why it can't happen here). `--skip-text` is
+  required, not optional — without it ocrmypdf aborts on the first page
+  it finds with existing text, and every page has one by this point.
+  **Known infra gap**: `--optimize 3` requires `pngquant`, confirmed
+  missing from the Dockerfile (a hard failure, verified by actually
+  running this without it locally) — needs adding before this stage
+  works in the real container. `jbig2` is also recommended for this
+  optimize level but only warns, doesn't fail, if missing.
 
 `pipeline/split.py` was removed (see `PROJECT_SPEC.md` pipeline stage
 list) — it rasterized pages for the *old* per-page-image OCR design.

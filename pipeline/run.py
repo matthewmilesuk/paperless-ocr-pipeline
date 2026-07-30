@@ -11,14 +11,14 @@ from pathlib import Path
 
 from django.conf import settings
 
-from . import cleanup, ingest, ocr, output, pdfa, reassemble, validate
+from . import cleanup, ingest, ocr, orient, output, pdfa, reassemble, validate
 
 
 def run_pipeline(job_id: int) -> None:
     """
     Run the full pipeline for ingest.models.Job `job_id`:
 
-      ingest -> cleanup -> ocr -> reassemble -> pdfa -> validate -> output
+      ingest -> cleanup -> orient -> ocr -> reassemble -> pdfa -> validate -> output
 
     Updates the Job's status/output_path/error_message as it progresses,
     and emails the user on completion for async (queued) runs.
@@ -43,11 +43,16 @@ def run_pipeline(job_id: int) -> None:
     cleaned_path = cleanup_result.output_path
     # cleanup_result.pages_dropped / .pages_borderline are available here
     # for stage-progress logging once that's wired up (see TODO above).
-    ocr_result = ocr.ocr_document(cleaned_path, job_id)
-    # reassemble() overlays directly onto cleaned_path's own pages --
+    # orient() deskews/auto-rotates BEFORE Document AI ever sees the
+    # document -- ocrmypdf's --deskew/--rotate-pages skip all processing
+    # on pages that already have a text layer, so this can't happen after
+    # reassemble() adds one (see PROJECT_SPEC.md "Decisions Changed").
+    oriented_path = orient.orient(cleaned_path, job_id)
+    ocr_result = ocr.ocr_document(oriented_path, job_id)
+    # reassemble() overlays directly onto oriented_path's own pages --
     # no rasterized page images needed (see pipeline/reassemble.py).
     reassembled_path = reassemble.reassemble(
-        cleaned_path, ocr_result, output_path=Path(settings.SCAN_OUTPUT_DIR) / f"{job_id}_reassembled.pdf"
+        oriented_path, ocr_result, output_path=Path(settings.SCAN_OUTPUT_DIR) / f"{job_id}_reassembled.pdf"
     )
     pdfa_path = pdfa.convert_to_pdfa(
         reassembled_path, output_path=Path(settings.SCAN_OUTPUT_DIR) / f"{job_id}_pdfa.pdf"

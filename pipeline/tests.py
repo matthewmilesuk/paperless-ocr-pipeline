@@ -12,12 +12,15 @@ from google.auth.exceptions import DefaultCredentialsError
 from google.cloud import documentai
 from pdf2image import convert_from_path
 from pdfminer.high_level import extract_text
-from PIL import Image, ImageDraw
+from pikepdf import Name, Operator
+from PIL import Image, ImageDraw, ImageFont
 from reportlab.pdfgen import canvas as reportlab_canvas
 
 from ingest.models import BorderlinePage, Job
 from pipeline.cleanup import MEASUREMENT_DPI, cleanup
 from pipeline.ocr import SYNC_PAGE_LIMIT, DocumentTooLongForSyncOCR, OcrResult, ocr_document
+from pipeline.orient import orient
+from pipeline.pdfa import convert_to_pdfa
 from pipeline.reassemble import (
     _PageGeometry,
     _text_draw_rotation,
@@ -102,6 +105,82 @@ def _make_ocr_result(pages_words):
         document={"text": "".join(text_parts), "pages": pages_data},
         page_count=len(pages_words),
     )
+
+
+def _text_page_image(lines, size=(850, 1100), font_size=20, line_height=30):
+    image = Image.new("RGB", size, "white")
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default(size=font_size)
+    for i, line in enumerate(lines):
+        draw.text((80, 80 + i * line_height), line, fill=0, font=font)
+    return image
+
+
+def _row_profile_variance(image, angle):
+    """
+    Variance of row-wise average pixel intensity after rotating `image`
+    by `angle` degrees. Horizontal text lines produce the sharpest row-
+    to-row contrast (and so the highest variance) when the page is
+    genuinely upright -- used by _estimate_skew_degrees() as an
+    orient.py-independent way to measure whether a page is actually
+    straight, not just trust that --deskew ran.
+    """
+    rotated = image.rotate(angle, expand=True, fillcolor="white").convert("L")
+    profile = rotated.resize((1, rotated.height), Image.Resampling.BOX)
+    values = list(profile.getdata())
+    mean = sum(values) / len(values)
+    return sum((v - mean) ** 2 for v in values) / len(values)
+
+
+def _estimate_skew_degrees(image, angle_range=8.0, step=0.5):
+    """
+    Projection-profile skew estimate: the angle that maximizes row-
+    profile variance (see _row_profile_variance) is taken as the
+    correction needed to make `image` upright. Independent of
+    ocrmypdf/tesseract -- validated against known skew angles before use
+    here (not just assumed to work).
+    """
+    best_angle, best_variance = 0.0, -1.0
+    angle = -angle_range
+    while angle <= angle_range:
+        variance = _row_profile_variance(image, angle)
+        if variance > best_variance:
+            best_variance, best_angle = variance, angle
+        angle += step
+    return best_angle
+
+
+def _find_invisible_text_blocks(page_or_stream, resources):
+    """
+    Independently scans `page_or_stream` (and any Form XObjects it
+    invokes via Do) for Tr-3 (invisible) text, recursively. Deliberately
+    NOT a reuse of orient.py's own _strip_stream() -- this exists to
+    verify that function's *effect* from the outside, so a bug in one
+    isn't masked by reusing it to check itself.
+    """
+    found = []
+    render_mode = 0
+    in_bt = False
+    for operands, operator in pikepdf.parse_content_stream(page_or_stream):
+        op = str(operator)
+        if op == "Tr":
+            render_mode = int(operands[0])
+        if op == "BT":
+            in_bt = True
+        if op == "Tj" and in_bt and render_mode == 3:
+            found.append(operands)
+        if op == "ET":
+            in_bt = False
+        if op == "Do" and resources is not None:
+            xobjects = resources.get(Name.XObject, {})
+            name = operands[0]
+            if name in xobjects and xobjects[name].get(Name.Subtype) == Name.Form:
+                found.extend(
+                    _find_invisible_text_blocks(
+                        xobjects[name], xobjects[name].get(Name.Resources)
+                    )
+                )
+    return found
 
 
 class CleanupTests(TestCase):
@@ -481,3 +560,145 @@ class ReassembleTests(TestCase):
 
         with self.assertRaises(ValueError):
             reassemble(cleaned, ocr_result, output_path)
+
+
+class OrientTests(TestCase):
+    """
+    Exercises the real ocrmypdf (+ tesseract/ghostscript) machinery --
+    deliberately not mocked, since orient.py's whole job is driving that
+    real tool correctly. Requires tesseract/ghostscript on PATH (already
+    in the Dockerfile; see AGENTS.md "Local development" if running
+    outside Docker).
+    """
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp_dir, ignore_errors=True)
+        override = override_settings(SCAN_OUTPUT_DIR=self.tmp_dir)
+        override.enable()
+        self.addCleanup(override.disable)
+
+    def _make_job(self, input_pdf):
+        return Job.objects.create(
+            original_filename=input_pdf.name,
+            source=Job.Source.WATCHER,
+            input_path=str(input_pdf),
+        )
+
+    def test_sideways_page_is_rotated_upright(self):
+        lines = [
+            "This page was scanned",
+            "sideways on purpose.",
+            "orient.py should notice",
+            "and rotate it upright.",
+        ]
+        image = _text_page_image(lines)
+        sideways = image.rotate(-90, expand=True)  # text now reads top-to-bottom
+        input_pdf = Path(self.tmp_dir) / "input.pdf"
+        sideways.save(input_pdf, "PDF", resolution=150)
+        job = self._make_job(input_pdf)
+
+        output_path = orient(input_pdf, job.id)
+
+        rendered = convert_from_path(str(output_path), dpi=100)[0].convert("L")
+        width, height = rendered.size
+        # Our fixture always draws text starting near the top of an
+        # upright page -- if orient() worked, ink should be concentrated
+        # in the top half of the rendered image, not the side/bottom
+        # (where it would land if still sideways).
+        top_half = rendered.crop((0, 0, width, height // 2))
+        bottom_half = rendered.crop((0, height // 2, width, height))
+        top_mean = sum(top_half.getdata()) / (top_half.width * top_half.height)
+        bottom_mean = sum(bottom_half.getdata()) / (bottom_half.width * bottom_half.height)
+        self.assertLess(top_mean, bottom_mean, "expected ink concentrated near the top after rotation")
+
+    def test_skewed_page_is_deskewed(self):
+        lines = [f"This is line number {i} of a denser test paragraph for deskew." for i in range(1, 21)]
+        image = _text_page_image(lines, font_size=20, line_height=30)
+        skewed = image.rotate(6, expand=True, fillcolor="white")
+        input_pdf = Path(self.tmp_dir) / "input.pdf"
+        skewed.save(input_pdf, "PDF", resolution=150)
+        job = self._make_job(input_pdf)
+
+        skew_before = _estimate_skew_degrees(convert_from_path(str(input_pdf), dpi=100)[0])
+
+        output_path = orient(input_pdf, job.id)
+
+        skew_after = _estimate_skew_degrees(convert_from_path(str(output_path), dpi=100)[0])
+
+        self.assertGreater(abs(skew_before), 4.0, "fixture should actually be skewed before orient()")
+        self.assertLess(abs(skew_after), 1.5, "orient() should straighten the page")
+
+    def test_throwaway_tesseract_text_is_stripped(self):
+        lines = ["This text will be OCR'd by tesseract", "during rotation detection, then discarded."]
+        image = _text_page_image(lines)
+        input_pdf = Path(self.tmp_dir) / "input.pdf"
+        image.save(input_pdf, "PDF", resolution=150)
+        job = self._make_job(input_pdf)
+
+        output_path = orient(input_pdf, job.id)
+
+        with pikepdf.open(output_path) as pdf:
+            for page in pdf.pages:
+                blocks = _find_invisible_text_blocks(page, page.get(Name.Resources))
+                self.assertEqual(
+                    blocks, [], "no invisible text should survive orient()'s strip step"
+                )
+
+        # Also confirm the *visible* page content survived -- the strip
+        # step must remove only the throwaway text, not the image.
+        rendered = convert_from_path(str(output_path), dpi=100)[0].convert("L")
+        self.assertLess(min(rendered.getdata()), 200, "page content should still be visible")
+
+
+class PdfaTests(TestCase):
+    """
+    Exercises the real ocrmypdf (+ ghostscript, pngquant) machinery for
+    the same reason as OrientTests. Requires ghostscript/pngquant on
+    PATH -- ghostscript is already in the Dockerfile; pngquant is
+    currently NOT (see AGENTS.md/PROJECT_SPEC.md flag on this).
+    """
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp_dir, ignore_errors=True)
+
+    def _reassembled_like_pdf(self, text="Hello invisible world"):
+        """A page with existing invisible (Tr 3) text, matching what
+        reassemble.py's output actually looks like."""
+        buf = io.BytesIO()
+        c = reportlab_canvas.Canvas(buf, pagesize=(300, 400))
+        text_obj = c.beginText(10, 10)
+        text_obj.setTextRenderMode(3)
+        text_obj.setFont("Helvetica", 12)
+        text_obj.textOut(text)
+        c.drawText(text_obj)
+        c.showPage()
+        c.save()
+
+        path = Path(self.tmp_dir) / "reassembled.pdf"
+        with pikepdf.open(io.BytesIO(buf.getvalue())) as pdf:
+            pdf.save(str(path))
+        return path
+
+    def test_produces_pdfa_flagged_output(self):
+        reassembled = self._reassembled_like_pdf()
+        output_path = Path(self.tmp_dir) / "output.pdf"
+
+        result_path = convert_to_pdfa(reassembled, output_path)
+
+        self.assertTrue(result_path.exists())
+        with pikepdf.open(result_path) as pdf:
+            metadata = pdf.open_metadata()
+            # PDF/A-2b, matching PROJECT_SPEC.md's "standardized PDF/A-2b".
+            self.assertEqual(str(metadata.get("pdfaid:part")), "2")
+            self.assertEqual(str(metadata.get("pdfaid:conformance")), "B")
+
+    def test_existing_text_layer_survives_conversion(self):
+        reassembled = self._reassembled_like_pdf(text="Findable invisible text")
+        output_path = Path(self.tmp_dir) / "output.pdf"
+
+        convert_to_pdfa(reassembled, output_path)
+
+        extracted = extract_text(str(output_path))
+        self.assertIn("Findable invisible text", extracted)

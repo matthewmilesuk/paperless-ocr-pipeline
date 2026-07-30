@@ -38,24 +38,34 @@ original plan):
   leaving a job unattributed). Covered by tests in `ingest/tests.py`.
 - docker-compose scaffold (web, worker, redis, samba, watcher) and a
   Dockerfile that builds.
-- **Three pipeline stages are real, not stubs**, each covered by tests in
+- **Five pipeline stages are real, not stubs**, each covered by tests in
   `pipeline/tests.py`:
   - `cleanup.py` — custom blank-page detection (rasterize, measure ink
     coverage, drop confidently-blank pages, log borderline ones).
+  - `orient.py` — deskew/auto-rotate via ocrmypdf, run before Document AI
+    or any text layer exists (see `PROJECT_SPEC.md` "Decisions Changed"
+    for why it can't run later). Strips the throwaway tesseract text
+    layer ocrmypdf's rotation detection embeds as a side effect —
+    verified concretely that ocrmypdf's own `--mode strip` does not
+    actually do this (see `AGENTS.md` "Current state").
   - `ocr.py` — calls the real Google Document AI API (synchronous
     endpoint, one call per document, 15-page cap). Tests mock the client
     entirely; the one real, billable, deliberately-opt-in call is
     `scripts/smoke-test-ocr.py`, never run automatically.
   - `reassemble.py` — overlays Document AI's recognized text onto the
-    cleaned PDF's own pages as an invisible, searchable layer, rotation
+    oriented PDF's own pages as an invisible, searchable layer, rotation
     included. See `AGENTS.md` "Current state" for the caveat on how far
     the rotation handling has actually been verified.
+  - `pdfa.py` — ocrmypdf PDF/A conversion (`--skip-text`, no
+    rotate/deskew — see `orient.py` above). **Known infra gap:**
+    `--optimize 3` needs `pngquant`, not currently in the Dockerfile
+    (confirmed by hitting the actual failure locally without it).
 
 **Still a stub / not working yet:**
 - **The remaining `pipeline/*.py` stage functions raise
-  `NotImplementedError`** (`ingest.py`, `pdfa.py`, `validate.py`,
-  `output.py`). `pipeline/run.py` orchestrates all stages in order, but
-  running it fails at the first remaining stub. The web upload view
+  `NotImplementedError`** (`ingest.py`, `validate.py`, `output.py`).
+  `pipeline/run.py` orchestrates all stages in order, but running it
+  fails at the first remaining stub. The web upload view
   still enqueues it regardless, so that Django-RQ job will fail in the
   worker; the watcher doesn't enqueue anything yet at all (see
   `watcher/watch.py`'s `handle_new_scan`), since there's nothing fully
@@ -123,10 +133,12 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
    code path regardless of entry point.
 
 2. **Cleanup pass (custom blank-page detection)**
-   - Blank page removal only — deskew/auto-rotate happens at the PDF/A
-     conversion stage instead (see step 5). See `PROJECT_SPEC.md`
-     "Decisions Changed" for why: Stirling PDF was evaluated and dropped
-     from this pipeline before implementation.
+   - Blank page removal only — deskew/auto-rotate is a separate stage
+     (step 3, below). See `PROJECT_SPEC.md` "Decisions Changed" for the
+     full history: Stirling PDF was evaluated and dropped before
+     implementation, then deskew/rotate moved a second time, out of
+     `pdfa.py`, once it turned out ocrmypdf can't actually run those
+     flags on a page that already has a text layer.
    - Each page is rasterized and measured for ink/pixel coverage.
      Confidently-blank pages (≈ under 0.5% ink coverage) are dropped
      automatically. Borderline pages (≈ 0.5–3%) are **kept in the final
@@ -134,11 +146,22 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
      review, since a false-positive blank-page drop is unrecoverable once
      the source paper is shredded. Threshold is configurable.
 
-3. **OCR — Google Document AI**
+3. **Orient (deskew + auto-rotate)** — via `ocrmypdf --deskew
+   --rotate-pages`, run *before* Document AI ever sees the document.
+   Has to run this early: ocrmypdf skips all per-page processing (not
+   just OCR) on pages that already have a text layer, confirmed against
+   its actual source, not just its docs (see `PROJECT_SPEC.md` "Decisions
+   Changed"). `--rotate-pages` runs tesseract internally to detect
+   orientation, which embeds a throwaway invisible text layer as a side
+   effect — that gets stripped immediately after, before Document AI
+   ever runs, since ocrmypdf's own text layer isn't what we want in the
+   final document.
+
+4. **OCR — Google Document AI**
    - Processor: Enterprise Document OCR
    - Cost: ~$1.50 per 1,000 pages (current tier, well under the
      5,000,000 pages/month threshold for this project's volume)
-   - Sends the cleaned PDF directly to Document AI's synchronous process
+   - Sends the oriented PDF directly to Document AI's synchronous process
      endpoint in one call — Document AI segments pages itself, so there's
      no separate page-image splitting step before this. Output: the full
      Document AI response, serialized (whole-document text plus per-page
@@ -149,28 +172,35 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
      silently truncated. Batch processing (Cloud Storage, up to 500
      pages) would lift this but isn't built yet.
 
-4. **Reassemble + overlay** — adds Document AI's recognized text as an
-   invisible (searchable, not painted) layer directly onto the cleaned
+5. **Reassemble + overlay** — adds Document AI's recognized text as an
+   invisible (searchable, not painted) layer directly onto the oriented
    PDF's own pages via `pikepdf.Page.add_overlay()` — no rasterized page
    images or intermediate split step (see `PROJECT_SPEC.md` "Decisions
    Changed" for why `pipeline/split.py` was removed). Positioning uses
    Document AI's normalized bounding boxes against each page's actual
    size and rotation, read from the PDF itself.
 
-5. **PDF/A conversion** — via `ocrmypdf`, called directly:
+6. **PDF/A conversion** — via `ocrmypdf`, called directly:
    - `--output-type pdfa`
-   - `--rotate-pages` / `--deskew` — auto-rotation and deskew happen here
+   - `--skip-text` — required: the page already has a text layer by this
+     point, and ocrmypdf errors out on the first page it finds with
+     existing text otherwise. Deliberately no `--rotate-pages`/`--deskew`
+     here anymore — that's step 3's job now (see above).
    - `--optimize 3` for file size reduction (JBIG2 for bitonal content,
      smarter JPEG handling for color) — this is where file size gets
      controlled, NOT by downscaling the source scan. The 400 DPI color
      source is the archival "source of truth" and should never be
      pre-shrunk before this point.
+   - **Known infra gap:** `--optimize 3` needs `pngquant`, which isn't
+     in the Dockerfile yet (confirmed by running this locally without
+     it — a hard failure). Needs adding before this stage works in the
+     real container.
 
-6. **Validate — veraPDF** — confirms actual PDF/A compliance. If validation
+7. **Validate — veraPDF** — confirms actual PDF/A compliance. If validation
    fails, the file does NOT proceed to the output folder. It's moved to a
    `failed/` folder with a log entry for manual review instead.
 
-7. **Output** — finished PDF/A lands in the folder Paperless-NGX watches.
+8. **Output** — finished PDF/A lands in the folder Paperless-NGX watches.
 
 ## Processing Mode
 
