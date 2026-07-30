@@ -57,32 +57,38 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
      review, since a false-positive blank-page drop is unrecoverable once
      the source paper is shredded. Threshold is configurable.
 
-3. **Split** into individual page images (in-memory / temp files only —
-   never persisted to disk as separate files).
-
-4. **OCR — Google Document AI**
+3. **OCR — Google Document AI**
    - Processor: Enterprise Document OCR
    - Cost: ~$1.50 per 1,000 pages (current tier, well under the
      5,000,000 pages/month threshold for this project's volume)
-   - Output: the full Document AI response, serialized (whole-document
-     text plus per-page layout/bounding-box data) — `reassemble.py`
-     converts this into whatever overlay format it ends up using (e.g.
-     hOCR) at that stage, not here, so nothing Document AI returns is
-     discarded before it's needed.
-   - **Known v1 limitation:** uses Document AI's *synchronous* process
-     endpoint (one API call for the whole document), which caps input at
-     15 pages (30 with `imageless_mode`, which trades off some accuracy —
+   - Sends the cleaned PDF directly to Document AI's synchronous process
+     endpoint (one API call for the whole document — Document AI
+     segments pages itself internally; there is no separate page-image
+     splitting step before this). Output: the full Document AI response,
+     serialized (whole-document text plus per-page layout/bounding-box
+     data, including both absolute and *normalized* — resolution-
+     independent — bounding boxes) — `reassemble.py` converts this into
+     the overlay directly, so nothing Document AI returns is discarded
+     before it's needed.
+   - **Known v1 limitation:** the synchronous endpoint caps input at 15
+     pages (30 with `imageless_mode`, which trades off some accuracy —
      not used). Documents over 15 pages raise a clear, specific error
      rather than being silently truncated or attempted anyway. Batch
      processing (via Cloud Storage, up to 500 pages) would lift this cap
      but isn't built yet — see "Things Deliberately Decided Against".
 
-5. **Reassemble + overlay** — rebuild a single PDF in original page order,
-   overlaying the OCR'd text as an invisible layer on top of the original
-   page image (so the file looks like the scan but is fully searchable/
-   copyable).
+4. **Reassemble + overlay** — adds Document AI's recognized text as an
+   invisible (searchable, not painted) layer directly onto the cleaned
+   PDF's own pages via `pikepdf.Page.add_overlay()` — no rasterized page
+   images, no intermediate split step (see "Decisions Changed" below for
+   why `pipeline/split.py` was removed). Positioning uses Document AI's
+   normalized bounding boxes against each page's actual size and
+   rotation (read from the PDF itself, not assumed from Document AI's
+   own dimension data), so the overlay lands correctly regardless of the
+   scan's resolution or a page's `/Rotate` value. Page order and content
+   are otherwise untouched — only text is added.
 
-6. **PDF/A conversion** — via `ocrmypdf`, called directly:
+5. **PDF/A conversion** — via `ocrmypdf`, called directly:
    - `--output-type pdfa`
    - `--rotate-pages` / `--deskew` — this is where auto-rotation and
      deskew actually happen (moved here from the cleanup pass; see
@@ -93,11 +99,11 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
      source is the archival "source of truth" and should never be
      pre-shrunk before this point.
 
-7. **Validate — veraPDF** — confirms actual PDF/A compliance. If validation
+6. **Validate — veraPDF** — confirms actual PDF/A compliance. If validation
    fails, the file does NOT proceed to the output folder. It's moved to a
    `failed/` folder with a log entry for manual review instead.
 
-8. **Output** — finished PDF/A lands in the folder Paperless-NGX watches.
+7. **Output** — finished PDF/A lands in the folder Paperless-NGX watches.
 
 ## Processing Mode
 
@@ -152,7 +158,7 @@ just usable on this one machine.
   - Its rotation endpoint only supports fixed 90-degree increments, not
     auto skew/orientation detection. `ocrmypdf`'s own `--deskew` and
     `--rotate-pages` flags do this properly and were always going to run
-    at the PDF/A conversion stage anyway (stage 6) — nothing is lost by
+    at the PDF/A conversion stage anyway (stage 5) — nothing is lost by
     dropping Stirling for this; that work just moves to `pdfa.py`.
   - Its remove-blanks endpoint is binary (delete or don't), with no way
     to express the "confidently blank → auto-drop, borderline → keep and
@@ -166,6 +172,22 @@ just usable on this one machine.
     integration point are gone. The custom blank-page detection logic
     itself is not yet implemented — this change updates the spec/infra
     ahead of that work.
+- **`pipeline/split.py` removed** (was: stage 3, rasterizing the cleaned
+  PDF into per-page images for OCR to consume). It existed for an OCR
+  design where each page image was sent to Document AI individually.
+  Once `ocr.py` was actually built, it turned out Document AI's
+  synchronous endpoint takes the whole cleaned PDF in one call and
+  segments pages itself — no pre-split images needed there. Investigated
+  whether `reassemble.py` needed them either: it doesn't, because (a)
+  Document AI's bounding boxes are available as `normalized_vertices` —
+  fractions of the page, resolution-independent — so positioning text
+  never depended on knowing any particular rasterization DPI, and (b)
+  `cleanup.py` only ever deletes pages via `pikepdf`, never rasterizes
+  ones it keeps, so the cleaned PDF's pages already are the original
+  scan content at full quality; `pikepdf.Page.add_overlay()` can merge
+  the invisible text layer directly onto them. Nothing in the pipeline
+  needed rasterized page images once both facts were confirmed, so the
+  stage was removed rather than kept as unused scaffolding.
 
 ## Open Questions / To Be Decided
 

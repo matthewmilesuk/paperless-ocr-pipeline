@@ -38,18 +38,28 @@ original plan):
   leaving a job unattributed). Covered by tests in `ingest/tests.py`.
 - docker-compose scaffold (web, worker, redis, samba, watcher) and a
   Dockerfile that builds.
-- Google Document AI is wired as an *integration point* (`GCP_DOCAI_*`
-  settings) — not yet called by any code.
+- **Three pipeline stages are real, not stubs**, each covered by tests in
+  `pipeline/tests.py`:
+  - `cleanup.py` — custom blank-page detection (rasterize, measure ink
+    coverage, drop confidently-blank pages, log borderline ones).
+  - `ocr.py` — calls the real Google Document AI API (synchronous
+    endpoint, one call per document, 15-page cap). Tests mock the client
+    entirely; the one real, billable, deliberately-opt-in call is
+    `scripts/smoke-test-ocr.py`, never run automatically.
+  - `reassemble.py` — overlays Document AI's recognized text onto the
+    cleaned PDF's own pages as an invisible, searchable layer, rotation
+    included. See `AGENTS.md` "Current state" for the caveat on how far
+    the rotation handling has actually been verified.
 
 **Still a stub / not working yet:**
-- **Every `pipeline/*.py` stage function raises `NotImplementedError`**
-  (`ingest.py`, `cleanup.py`, `split.py`, `ocr.py`, `reassemble.py`,
-  `pdfa.py`, `validate.py`, `output.py`). `pipeline/run.py` orchestrates
-  them in order, but running it fails at the first stage. The web upload
-  view still enqueues it regardless, so that Django-RQ job will fail in
-  the worker; the watcher doesn't enqueue anything yet at all (see
-  `watcher/watch.py`'s `handle_new_scan`), since there's nothing working
-  downstream for it to hand off to.
+- **The remaining `pipeline/*.py` stage functions raise
+  `NotImplementedError`** (`ingest.py`, `pdfa.py`, `validate.py`,
+  `output.py`). `pipeline/run.py` orchestrates all stages in order, but
+  running it fails at the first remaining stub. The web upload view
+  still enqueues it regardless, so that Django-RQ job will fail in the
+  worker; the watcher doesn't enqueue anything yet at all (see
+  `watcher/watch.py`'s `handle_new_scan`), since there's nothing fully
+  working downstream for it to hand off to.
 - No synchronous-vs-async cutover logic (`SYNCHRONOUS_BATCH_SIZE_LIMIT` is
   a setting; nothing reads it yet).
 - No completion emails (SMTP settings exist; nothing calls `send_mail()`).
@@ -114,7 +124,7 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
 
 2. **Cleanup pass (custom blank-page detection)**
    - Blank page removal only — deskew/auto-rotate happens at the PDF/A
-     conversion stage instead (see step 6). See `PROJECT_SPEC.md`
+     conversion stage instead (see step 5). See `PROJECT_SPEC.md`
      "Decisions Changed" for why: Stirling PDF was evaluated and dropped
      from this pipeline before implementation.
    - Each page is rasterized and measured for ink/pixel coverage.
@@ -124,21 +134,30 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
      review, since a false-positive blank-page drop is unrecoverable once
      the source paper is shredded. Threshold is configurable.
 
-3. **Split** into individual page images (in-memory / temp files only —
-   never persisted to disk as separate files).
-
-4. **OCR — Google Document AI**
+3. **OCR — Google Document AI**
    - Processor: Enterprise Document OCR
    - Cost: ~$1.50 per 1,000 pages (current tier, well under the
      5,000,000 pages/month threshold for this project's volume)
-   - Output: hOCR (text + layout position per page)
+   - Sends the cleaned PDF directly to Document AI's synchronous process
+     endpoint in one call — Document AI segments pages itself, so there's
+     no separate page-image splitting step before this. Output: the full
+     Document AI response, serialized (whole-document text plus per-page
+     layout/bounding-box data, both absolute and resolution-independent
+     normalized coordinates) — `reassemble.py` uses this directly.
+   - **Known v1 limitation:** the synchronous endpoint caps input at 15
+     pages. Documents over that raise a clear error rather than being
+     silently truncated. Batch processing (Cloud Storage, up to 500
+     pages) would lift this but isn't built yet.
 
-5. **Reassemble + overlay** — rebuild a single PDF in original page order,
-   overlaying the OCR'd text as an invisible layer on top of the original
-   page image (so the file looks like the scan but is fully searchable/
-   copyable).
+4. **Reassemble + overlay** — adds Document AI's recognized text as an
+   invisible (searchable, not painted) layer directly onto the cleaned
+   PDF's own pages via `pikepdf.Page.add_overlay()` — no rasterized page
+   images or intermediate split step (see `PROJECT_SPEC.md` "Decisions
+   Changed" for why `pipeline/split.py` was removed). Positioning uses
+   Document AI's normalized bounding boxes against each page's actual
+   size and rotation, read from the PDF itself.
 
-6. **PDF/A conversion** — via `ocrmypdf`, called directly:
+5. **PDF/A conversion** — via `ocrmypdf`, called directly:
    - `--output-type pdfa`
    - `--rotate-pages` / `--deskew` — auto-rotation and deskew happen here
    - `--optimize 3` for file size reduction (JBIG2 for bitonal content,
@@ -147,11 +166,11 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
      source is the archival "source of truth" and should never be
      pre-shrunk before this point.
 
-7. **Validate — veraPDF** — confirms actual PDF/A compliance. If validation
+6. **Validate — veraPDF** — confirms actual PDF/A compliance. If validation
    fails, the file does NOT proceed to the output folder. It's moved to a
    `failed/` folder with a log entry for manual review instead.
 
-8. **Output** — finished PDF/A lands in the folder Paperless-NGX watches.
+7. **Output** — finished PDF/A lands in the folder Paperless-NGX watches.
 
 ## Processing Mode
 

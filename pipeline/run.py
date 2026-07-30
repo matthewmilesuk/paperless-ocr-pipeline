@@ -11,14 +11,14 @@ from pathlib import Path
 
 from django.conf import settings
 
-from . import cleanup, ingest, ocr, output, pdfa, reassemble, split, validate
+from . import cleanup, ingest, ocr, output, pdfa, reassemble, validate
 
 
 def run_pipeline(job_id: int) -> None:
     """
     Run the full pipeline for ingest.models.Job `job_id`:
 
-      ingest -> cleanup -> split -> ocr -> reassemble -> pdfa -> validate -> output
+      ingest -> cleanup -> ocr -> reassemble -> pdfa -> validate -> output
 
     Updates the Job's status/output_path/error_message as it progresses,
     and emails the user on completion for async (queued) runs.
@@ -43,13 +43,11 @@ def run_pipeline(job_id: int) -> None:
     cleaned_path = cleanup_result.output_path
     # cleanup_result.pages_dropped / .pages_borderline are available here
     # for stage-progress logging once that's wired up (see TODO above).
-    # split still runs for reassemble's page images (the overlay target);
-    # ocr_document() sends cleaned_path directly to Document AI in one
-    # synchronous call rather than per-page images -- see pipeline/ocr.py.
-    page_images = split.split_to_page_images(cleaned_path)
     ocr_result = ocr.ocr_document(cleaned_path, job_id)
+    # reassemble() overlays directly onto cleaned_path's own pages --
+    # no rasterized page images needed (see pipeline/reassemble.py).
     reassembled_path = reassemble.reassemble(
-        page_images, ocr_result, output_path=Path(settings.SCAN_OUTPUT_DIR) / f"{job_id}_reassembled.pdf"
+        cleaned_path, ocr_result, output_path=Path(settings.SCAN_OUTPUT_DIR) / f"{job_id}_reassembled.pdf"
     )
     pdfa_path = pdfa.convert_to_pdfa(
         reassembled_path, output_path=Path(settings.SCAN_OUTPUT_DIR) / f"{job_id}_pdfa.pdf"

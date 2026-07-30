@@ -52,9 +52,8 @@ once a validated PDF/A lands in the output folder.
 pipeline/
   ingest.py      - watcher/upload hands off a raw scan here
   cleanup.py     - custom blank-page detection (rasterize + ink coverage)
-  split.py       - splits into per-page images (in-memory/temp only)
   ocr.py         - calls Google Document AI (sync, <=15 pages), returns OcrResult
-  reassemble.py  - rebuilds one PDF, original order, invisible text overlay
+  reassemble.py  - invisible text overlay onto cleaned_path's own pages (no split step)
   pdfa.py        - ocrmypdf: --output-type pdfa, --rotate-pages, --deskew, --optimize
   validate.py    - veraPDF check; failure -> failed/ folder, not output/
   output.py      - writes to the folder Paperless-NGX watches
@@ -156,8 +155,9 @@ stubs tied to the spec, not working code. Don't assume a stage works
 because the file exists and has the right signature; check for
 `NotImplementedError` or a TODO before building on top of it.
 
-`pipeline/cleanup.py` and `pipeline/ocr.py` are the exceptions: both are
-implemented and tested (`pipeline/tests.py`).
+`pipeline/cleanup.py`, `pipeline/ocr.py`, and `pipeline/reassemble.py` are
+the exceptions: all three are implemented and tested (`pipeline/tests.py`).
+`pipeline/split.py` no longer exists — see below.
 
 - `cleanup.py` rasterizes each page via `pdf2image`, measures ink
   coverage, drops confidently-blank pages, and logs borderline ones as
@@ -173,13 +173,29 @@ implemented and tested (`pipeline/tests.py`).
   Document AI client entirely — no real API calls in the automatic test
   suite, ever** (see "Running tests" above for the one deliberate,
   billable exception: `scripts/smoke-test-ocr.py`).
+- `reassemble.py` overlays `OcrResult`'s text as an invisible (Tr 3)
+  layer directly onto `cleaned_path`'s own pages via
+  `pikepdf.Page.add_overlay()` — no rasterized page images, no
+  `split.py`. Positioning uses Document AI's `normalized_vertices`
+  (resolution-independent) against each page's real MediaBox size and
+  `/Rotate`, read via pikepdf rather than trusted from Document AI's own
+  Dimension field. **The `/Rotate` handling is geometrically derived and
+  tested three ways** (fixed-point checks, and real poppler rasterization
+  confirming a token lands in the visually-correct image quadrant for
+  all four rotation values) **but not verified against a real Document
+  AI response for an actually-rotated scan** — that would need a real,
+  billable API call that hasn't been made. See `reassemble.py`'s module
+  docstring for the full caveat before trusting this blindly on a
+  rotated real-world document.
 
-Both changed their stage function's contract by actually being
-implemented — `pipeline/run.py` and `pipeline/reassemble.py`'s type hints
-were updated to match (`cleanup_result.output_path`, `ocr_result` instead
-of `hocr_pages`), since leaving call sites referencing a signature that
-no longer exists isn't an option. `reassemble.py` itself is still a
-stub — only its parameter type hint changed to stay accurate.
+`pipeline/split.py` was removed (see `PROJECT_SPEC.md` pipeline stage
+list) — it rasterized pages for the *old* per-page-image OCR design.
+Since `ocr.py` now sends the whole cleaned PDF in one call and
+Document AI's bounding boxes are resolution-independent, nothing needed
+those rasterized images anymore. `pipeline/run.py` and
+`pipeline/reassemble.py` were updated accordingly (`cleaned_path` in,
+`OcrResult` out — no `page_images` parameter), since leaving call sites
+referencing a signature or file that no longer exists isn't an option.
 
 ## Auth & job visibility
 
