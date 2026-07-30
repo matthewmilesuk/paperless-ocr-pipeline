@@ -7,6 +7,47 @@ Versioning is semantic-ish and appropriate to a pre-1.0, single-developer
 scaffold — a MINOR bump per meaningful milestone, PATCH reserved for fixes
 within one.
 
+## [0.4.0] - 2026-07-30
+
+First version where an uploaded or watched scan actually results in a
+real saved file and a tracked `Job` row, rather than a no-op/TODO.
+
+### Added
+- `ingest/services.py` — shared job-creation logic for both entry
+  points: `create_job_from_upload()` saves a web-uploaded file into
+  `SCAN_INPUT_DIR` and creates a pending `Job`; `create_job_from_watched_file()`
+  does the equivalent for the watcher (the file is already in
+  `SCAN_INPUT_DIR`, so it's recorded rather than re-saved). Both funnel
+  through one internal `_create_job()`.
+- `watcher/watch.py`: `resolve_default_owner()` and `handle_new_scan()`
+  pulled out to module level (previously nested inside `main()`'s
+  closure, and unused) so the Samba-drop path is actually wired up and
+  testable. A missing/unset `DEFAULT_JOB_OWNER_USERNAME` now raises
+  `ImproperlyConfigured` with a clear message instead of silently
+  skipping attribution.
+- `ingest/tests.py` — first tests in the repo: web upload creates a
+  `Job` with the correct owner and a real file on disk; watcher-created
+  jobs use the default owner; both land in `Job.Status.PENDING`; the
+  watcher fails loudly (doesn't silently continue) when the default
+  owner account is missing or unconfigured.
+
+### Changed
+- `ingest/views.py`'s `upload()` now calls `create_job_from_upload()`
+  instead of computing a path and leaving the actual file write as a
+  `# TODO`.
+- README.md and PROJECT_SPEC.md: removed stale "single user... personal
+  utility, not a hosted service" framing left over from before v0.3.0's
+  multi-user/2FA work (the two docs had started contradicting each
+  other). Kept "local-network only" where still accurate, worded more
+  precisely against what `docker-compose.yml` actually restricts (or
+  doesn't). Same fix applied to `AGENTS.md`. README's "Status" section
+  updated to reflect that upload/watcher now actually save files and
+  create jobs.
+
+### Fixed
+- `watcher/watch.py` previously detected new files and only `print()`d
+  — no `Job` was ever created for a Samba-dropped scan. Now fixed.
+
 ## [0.3.0] - 2026-07-30
 
 ### Added
