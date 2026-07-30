@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -18,6 +19,19 @@ class Job(models.Model):
     source = models.CharField(max_length=16, choices=Source.choices)
     status = models.CharField(
         max_length=16, choices=Status.choices, default=Status.PENDING
+    )
+    # Nullable at the schema level only so adding this field doesn't need a
+    # backfill migration -- every code path that creates a Job (web upload,
+    # watcher) must always set it. Watcher jobs fall back to
+    # settings.DEFAULT_JOB_OWNER_USERNAME rather than leaving this null; see
+    # AGENTS.md "Auth & job visibility". PROTECT so deleting a user can't
+    # silently take their job history with them.
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="jobs",
+        null=True,
+        blank=True,
     )
     input_path = models.CharField(max_length=1024)
     output_path = models.CharField(max_length=1024, blank=True)

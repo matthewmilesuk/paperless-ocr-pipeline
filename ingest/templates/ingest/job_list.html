@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>My Jobs - Paperless OCR Pipeline</title>
+</head>
+<body>
+  <nav>
+    <a href="{% url 'upload' %}">Upload</a> |
+    <a href="{% url 'job_list' %}">My Jobs</a> |
+    <a href="{% url 'logout' %}">Log out</a>
+  </nav>
+  <h1>{% if request.user.is_staff %}All Jobs{% else %}My Jobs{% endif %}</h1>
+  <table>
+    <thead>
+      <tr>
+        <th>File</th>
+        <th>Status</th>
+        {% if request.user.is_staff %}<th>Uploaded by</th>{% endif %}
+        <th>Created</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr>
+        <td><a href="{% url 'job_status' job.id %}">{{ job.original_filename }}</a></td>
+        <td>{{ job.get_status_display }}</td>
+        {% if request.user.is_staff %}<td>{{ job.uploaded_by }}</td>{% endif %}
+        <td>{{ job.created_at }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="4">No jobs yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

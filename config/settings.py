@@ -22,7 +22,12 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "django_otp",
+    "django_otp.plugins.otp_static",
+    "django_otp.plugins.otp_totp",
+    "two_factor",
     "django_rq",
+    "accounts",
     "ingest",
 ]
 
@@ -32,9 +37,25 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django_otp.middleware.OTPMiddleware",
+    "accounts.middleware.Enforce2FAMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+
+# Custom user model -- must be set before the first migration ever runs
+# (see accounts/models.py). Do not change this once real data exists.
+AUTH_USER_MODEL = "accounts.User"
+
+# two_factor's login view replaces Django's default -- see config/urls.py
+# and accounts/middleware.py for enforcement of "no bare-password access".
+LOGIN_URL = "two_factor:login"
+LOGIN_REDIRECT_URL = "job_list"
+
+# Patches django.contrib.admin's login to also require 2FA, per explicit
+# product decision that /admin/ is in-scope for enforcement, not exempt.
+TWO_FACTOR_PATCH_ADMIN = True
+OTP_TOTP_ISSUER = "Paperless OCR Pipeline"
 
 ROOT_URLCONF = "config.urls"
 
@@ -117,3 +138,10 @@ BLANK_PAGE_REVIEW_THRESHOLD_PCT = float(
 
 # Synchronous vs async cutover (see PROJECT_SPEC.md "Processing Mode").
 SYNCHRONOUS_BATCH_SIZE_LIMIT = int(os.environ.get("SYNCHRONOUS_BATCH_SIZE_LIMIT", 5))
+
+# --- Multi-user / job ownership --------------------------------------------
+# Username of the account that watcher-created jobs (Samba drops -- no user
+# session involved) are attributed to. Must be an existing user (e.g. an
+# admin created via `manage.py createsuperuser`). See AGENTS.md "Auth & job
+# visibility" -- watcher jobs must not be left with a null owner.
+DEFAULT_JOB_OWNER_USERNAME = os.environ.get("DEFAULT_JOB_OWNER_USERNAME", "")

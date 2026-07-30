@@ -81,6 +81,31 @@ Don't assume a stage works because the file exists and has the right
 signature; check for `NotImplementedError` or a TODO before building on
 top of it.
 
+## Auth & job visibility
+
+- **Custom user model.** `AUTH_USER_MODEL = "accounts.User"` (see
+  `accounts/models.py`), not Django's default `auth.User`. Never assume
+  the stock user model — import from `django.conf.settings.AUTH_USER_MODEL`
+  or `django.contrib.auth.get_user_model()`, not
+  `django.contrib.auth.models.User`.
+- **2FA is enforced, not optional.** `accounts/middleware.py` redirects any
+  authenticated user without a configured TOTP/backup-code device straight
+  to setup, before they can reach uploads, job status, or `/admin/`
+  (patched via `TWO_FACTOR_PATCH_ADMIN`). A password alone never grants
+  access. This applies only to the Django web front end — the
+  Samba/watcher/worker side has no auth concept and isn't affected.
+- **Job visibility is per-user, unless staff.** `Job.uploaded_by` scopes
+  everything: normal users only see/open their own jobs, `is_staff`
+  accounts see all of them. Any new view or queryset over `Job` must go
+  through this rule (see `ingest.views._jobs_visible_to`) rather than
+  querying `Job.objects` directly — don't add an "unfiltered by default"
+  code path.
+- **Watcher-created jobs still need an owner.** Watcher-triggered jobs have
+  no user session, so they're attributed to
+  `settings.DEFAULT_JOB_OWNER_USERNAME` instead of being left unowned. If
+  that username is unset or doesn't match a real account, fail loudly
+  rather than silently leaving `uploaded_by` null.
+
 ## Style / conventions
 
 - Python, Django conventions throughout (`web`, `worker`, `watcher` as

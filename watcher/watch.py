@@ -32,6 +32,12 @@ def main():
             # and enqueue pipeline.run.run_pipeline via django_rq, same as
             # ingest.views.upload(). Guard against partially-written files
             # (e.g. wait for file size to stabilize) before enqueuing.
+            #
+            # No user session exists for a watcher-triggered job, so set
+            # uploaded_by from settings.DEFAULT_JOB_OWNER_USERNAME (see
+            # AGENTS.md "Auth & job visibility") -- look the user up and
+            # raise loudly if it's unset or doesn't match a real account,
+            # rather than silently leaving the job unattributed.
             print(f"[watcher] new file detected: {path}")
 
     observer = Observer()

@@ -5,8 +5,14 @@
   <title>Job {{ job.id }} - Paperless OCR Pipeline</title>
 </head>
 <body>
+  <nav>
+    <a href="{% url 'upload' %}">Upload</a> |
+    <a href="{% url 'job_list' %}">My Jobs</a> |
+    <a href="{% url 'logout' %}">Log out</a>
+  </nav>
   <h1>Job #{{ job.id }}</h1>
   <p>File: {{ job.original_filename }}</p>
+  <p>Uploaded by: {{ job.uploaded_by }}</p>
   <p>Status: {{ job.get_status_display }}</p>
   {% if job.error_message %}
     <pre>{{ job.error_message }}</pre>

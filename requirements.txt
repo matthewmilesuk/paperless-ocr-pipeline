@@ -3,6 +3,10 @@ Django>=5.0,<6.0
 django-rq>=2.10
 redis>=5.0
 
+# Auth / 2FA (TOTP + backup codes -- no SMS/Twilio backend)
+django-otp>=1.5
+django-two-factor-auth>=1.16
+
 # OCR / GCP
 google-cloud-documentai>=2.29
 google-cloud-storage>=2.16

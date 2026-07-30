@@ -5,8 +5,8 @@ from .models import BorderlinePage, Job
 
 @admin.register(Job)
 class JobAdmin(admin.ModelAdmin):
-    list_display = ("original_filename", "source", "status", "created_at", "updated_at")
-    list_filter = ("status", "source")
+    list_display = ("original_filename", "uploaded_by", "source", "status", "created_at", "updated_at")
+    list_filter = ("status", "source", "uploaded_by")
     readonly_fields = ("created_at", "updated_at")
 
 

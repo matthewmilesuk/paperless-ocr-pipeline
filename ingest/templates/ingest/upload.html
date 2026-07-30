@@ -5,6 +5,11 @@
   <title>Paperless OCR Pipeline - Upload</title>
 </head>
 <body>
+  <nav>
+    <a href="{% url 'upload' %}">Upload</a> |
+    <a href="{% url 'job_list' %}">My Jobs</a> |
+    <a href="{% url 'logout' %}">Log out</a>
+  </nav>
   <h1>Upload a scan</h1>
   <form method="post" enctype="multipart/form-data">
     {% csrf_token %}

@@ -123,7 +123,10 @@ just usable on this one machine.
 
 ## Things Deliberately Decided Against (for now)
 
-- No authentication / user accounts — single user, local network only.
+- ~~No authentication / user accounts — single user, local network only.~~
+  **Superseded:** the web front end now supports multiple users with
+  enforced 2FA — see "Authentication & Access Control" below. The
+  Samba/watcher/worker side has no auth concept and is unaffected.
 - No Celery — Django-RQ is simpler for this scale.
 - No custom-built blank-page detection or rotation logic — Stirling PDF
   already solves this well; don't reinvent it.
@@ -136,6 +139,23 @@ just usable on this one machine.
 - Behavior when a job fails partway through (retry? quarantine? notify?).
 - Whether the "borderline blank page" log should be a flat file, a DB
   table visible in the Django admin, or something else.
+
+## Authentication & Access Control
+
+The web front end (upload UI, job status) requires a login and enforces
+TOTP-based two-factor authentication (Google Authenticator/Authy-style, plus
+backup codes) — a password alone is not enough. Any logged-in user without a
+2FA device configured is redirected straight to setup before they can reach
+uploads, job status, or Django admin.
+
+Job visibility is scoped per user: normal users only see and can open jobs
+they uploaded themselves. Staff/admin accounts (Django's `is_staff` flag)
+can see and open every job on the system.
+
+This only applies to the web front end. The Samba share, watcher, and
+worker have no auth concept — a scan dropped in the Samba input folder is
+attributed to the account named in `DEFAULT_JOB_OWNER_USERNAME` (`.env`),
+which must already exist (create it with `manage.py createsuperuser`).
 
 ## Getting Started
 
