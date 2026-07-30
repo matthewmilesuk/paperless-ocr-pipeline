@@ -1,24 +1,32 @@
 """
 Step 4: OCR -- Google Document AI.
 
-Sends the cleaned PDF to the Enterprise Document OCR processor
-(settings.GCP_DOCAI_PROCESSOR_ID) via Document AI's *synchronous*
-process endpoint -- one API call for the whole document, not one call
-per page. Document AI handles page segmentation internally and returns
-structured per-page text + layout (bounding boxes, blocks, lines,
-tokens) in a single response (see PROJECT_SPEC.md "OCR - Google Document
-AI").
+Sends the cleaned PDF to the Enterprise Document OCR processor via
+Document AI's *synchronous* process endpoint -- one API call for the
+whole document, not one call per page. Document AI handles page
+segmentation internally and returns structured per-page text + layout
+(bounding boxes, blocks, lines, tokens) in a single response (see
+PROJECT_SPEC.md "OCR - Google Document AI").
 
 The synchronous endpoint caps input at SYNC_PAGE_LIMIT pages. Documents
 over that limit raise DocumentTooLongForSyncOCR before any API call is
 attempted -- batch processing (via Cloud Storage, up to 500 pages) would
 handle those, but that's a known future enhancement, not built yet (see
 PROJECT_SPEC.md "Things Deliberately Decided Against").
+
+Configuration (project ID, processor ID, credentials) comes from the
+gcpconfig app's Configuration model if a row exists there (set via the
+admin-only setup wizard), falling back to settings.py/.env values
+otherwise -- see _effective_config(). This is what lets the wizard take
+effect without a process restart: values are re-resolved from the
+database on every call, not read once at import time the way plain
+Django settings are.
 """
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+import google.auth
 import pikepdf
 from django.conf import settings
 from google.api_core import exceptions as google_exceptions
@@ -58,25 +66,121 @@ class OcrResult:
     page_count: int
 
 
+@dataclass
+class _EffectiveGcpConfig:
+    project_id: str
+    processor_id: str
+    credentials_path: str  # "" if nothing explicit is configured anywhere
+
+
+def _effective_config() -> _EffectiveGcpConfig:
+    """
+    gcpconfig.models.Configuration wins if a row exists (set via the
+    setup wizard); falls back to settings.py/.env values otherwise, so
+    existing manual .env-only setups keep working unchanged. Imported
+    lazily -- matches how pipeline/*.py already lazily imports
+    ingest.models inside functions rather than at module top level, to
+    avoid an import-time coupling between apps.
+    """
+    from gcpconfig.models import get_configuration
+
+    config = get_configuration()
+    if config is not None:
+        return _EffectiveGcpConfig(
+            project_id=config.gcp_project_id,
+            processor_id=config.gcp_docai_processor_id,
+            credentials_path=config.gcp_credentials_path,
+        )
+    return _EffectiveGcpConfig(
+        project_id=settings.GCP_PROJECT_ID,
+        processor_id=settings.GCP_DOCAI_PROCESSOR_ID,
+        credentials_path="",
+    )
+
+
+def _build_processor_name(project_id: str, location: str, processor_id: str) -> str:
+    return f"projects/{project_id}/locations/{location}/processors/{processor_id}"
+
+
+def _build_client(credentials_path: str) -> documentai.DocumentProcessorServiceClient:
+    """
+    Builds a Document AI client for settings.GCP_DOCAI_LOCATION (always
+    from settings -- not part of the wizard's 3 configurable values).
+
+    If `credentials_path` is given, credentials are loaded explicitly
+    from that file via google.auth.load_credentials_from_file() rather
+    than relying on the ambient GOOGLE_APPLICATION_CREDENTIALS
+    environment variable -- this is what lets a DB-configured
+    credentials path (written by the setup wizard, potentially in a
+    different OS process than whatever last read the environment) take
+    effect correctly. If `credentials_path` is empty, falls back to
+    today's original behaviour: no explicit credentials are passed, and
+    the underlying google-auth library resolves them ambiently via
+    google.auth.default() (which reads GOOGLE_APPLICATION_CREDENTIALS
+    itself) -- unchanged for existing manual .env-only setups.
+    """
+    client_options = ClientOptions(
+        api_endpoint=f"{settings.GCP_DOCAI_LOCATION}-documentai.googleapis.com"
+    )
+    if credentials_path:
+        credentials, _ = google.auth.load_credentials_from_file(credentials_path)
+        return documentai.DocumentProcessorServiceClient(
+            credentials=credentials, client_options=client_options
+        )
+    return documentai.DocumentProcessorServiceClient(client_options=client_options)
+
+
 def _processor_name() -> str:
-    return (
-        f"projects/{settings.GCP_PROJECT_ID}"
-        f"/locations/{settings.GCP_DOCAI_LOCATION}"
-        f"/processors/{settings.GCP_DOCAI_PROCESSOR_ID}"
+    effective = _effective_config()
+    return _build_processor_name(
+        effective.project_id, settings.GCP_DOCAI_LOCATION, effective.processor_id
     )
 
 
 def _client() -> documentai.DocumentProcessorServiceClient:
-    # Document AI requires a location-specific endpoint for any location
-    # other than "global" -- the default endpoint won't resolve a
-    # location="us" processor. Credentials are picked up automatically
-    # from GOOGLE_APPLICATION_CREDENTIALS via Application Default
-    # Credentials; nothing is passed explicitly here.
-    return documentai.DocumentProcessorServiceClient(
-        client_options=ClientOptions(
-            api_endpoint=f"{settings.GCP_DOCAI_LOCATION}-documentai.googleapis.com"
+    effective = _effective_config()
+    return _build_client(effective.credentials_path)
+
+
+def describe_document_ai_error(exc: Exception) -> str:
+    """
+    Maps a Document AI-related exception to a clear, distinguishable,
+    human-readable diagnosis. Shared between ocr_document()'s own error
+    logging below and gcpconfig's setup-wizard validation
+    (gcpconfig/validation.py), so both surface the same specific
+    diagnosis -- bad credentials vs. wrong processor ID vs. missing IAM
+    role, etc. -- rather than the wizard reinventing its own separate
+    (and possibly inconsistent) error messages.
+
+    Order matters: google_exceptions.Unauthenticated/PermissionDenied/
+    ResourceExhausted/NotFound are all subclasses of GoogleAPICallError,
+    so the specific cases must be checked before the general one.
+    """
+    if isinstance(exc, DefaultCredentialsError):
+        return (
+            "Document AI credentials not found or invalid -- check the "
+            f"service account key file: {exc}"
         )
-    )
+    if isinstance(exc, google_exceptions.Unauthenticated):
+        return (
+            "Document AI rejected the credentials used -- check the "
+            f"service account key is valid and not revoked: {exc}"
+        )
+    if isinstance(exc, google_exceptions.PermissionDenied):
+        return (
+            "Document AI permission denied -- check the service account "
+            f"has roles/documentai.apiUser on the project: {exc}"
+        )
+    if isinstance(exc, google_exceptions.ResourceExhausted):
+        return f"Document AI quota/rate limit exceeded: {exc}"
+    if isinstance(exc, google_exceptions.NotFound):
+        return (
+            "Document AI processor not found -- check the project ID, "
+            f"location, and processor ID: {exc}"
+        )
+    if isinstance(exc, google_exceptions.GoogleAPICallError):
+        return f"Document AI call failed: {exc}"
+    return f"Unexpected error calling Document AI: {exc}"
 
 
 def ocr_document(cleaned_path: Path, job_id: int) -> OcrResult:
@@ -115,50 +219,15 @@ def ocr_document(cleaned_path: Path, job_id: int) -> OcrResult:
 
     try:
         response = _client().process_document(request=request)
-    except DefaultCredentialsError as exc:
-        logger.error(
-            "[ocr] job=%s Document AI credentials not found/invalid "
-            "(check GOOGLE_APPLICATION_CREDENTIALS): %s",
-            job_id,
-            exc,
-        )
-        raise
-    except google_exceptions.Unauthenticated as exc:
-        logger.error(
-            "[ocr] job=%s Document AI rejected the credentials used "
-            "(check the service account key is valid and not revoked): %s",
-            job_id,
-            exc,
-        )
-        raise
-    except google_exceptions.PermissionDenied as exc:
-        logger.error(
-            "[ocr] job=%s Document AI denied permission (check the "
-            "service account has roles/documentai.apiUser on the "
-            "project): %s",
-            job_id,
-            exc,
-        )
-        raise
-    except google_exceptions.ResourceExhausted as exc:
-        logger.error(
-            "[ocr] job=%s Document AI quota/rate limit exceeded: %s",
-            job_id,
-            exc,
-        )
-        raise
-    except google_exceptions.NotFound as exc:
-        logger.error(
-            "[ocr] job=%s Document AI processor not found (check "
-            "GCP_DOCAI_PROCESSOR_ID=%r and GCP_DOCAI_LOCATION=%r): %s",
-            job_id,
-            settings.GCP_DOCAI_PROCESSOR_ID,
-            settings.GCP_DOCAI_LOCATION,
-            exc,
-        )
-        raise
-    except google_exceptions.GoogleAPICallError as exc:
-        logger.error("[ocr] job=%s Document AI call failed: %s", job_id, exc)
+    except (
+        DefaultCredentialsError,
+        google_exceptions.Unauthenticated,
+        google_exceptions.PermissionDenied,
+        google_exceptions.ResourceExhausted,
+        google_exceptions.NotFound,
+        google_exceptions.GoogleAPICallError,
+    ) as exc:
+        logger.error("[ocr] job=%s %s", job_id, describe_document_ai_error(exc))
         raise
 
     return OcrResult(

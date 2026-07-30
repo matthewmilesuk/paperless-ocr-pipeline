@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "django_rq",
     "accounts",
     "ingest",
+    "gcpconfig",
 ]
 
 MIDDLEWARE = [
@@ -61,6 +62,10 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django_otp.middleware.OTPMiddleware",
     "accounts.middleware.Enforce2FAMiddleware",
+    # After 2FA -- GCP config readiness doesn't matter until a user is
+    # actually past the 2FA gate; see gcpconfig/middleware.py for why
+    # this is staff-scoped, unlike Enforce2FAMiddleware above.
+    "gcpconfig.middleware.RequireGcpConfigMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -147,6 +152,15 @@ GOOGLE_APPLICATION_CREDENTIALS = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"
 GCP_PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "")
 GCP_DOCAI_LOCATION = os.environ.get("GCP_DOCAI_LOCATION", "us")
 GCP_DOCAI_PROCESSOR_ID = os.environ.get("GCP_DOCAI_PROCESSOR_ID", "")
+
+# Where the gcpconfig setup wizard writes an uploaded service account key
+# (see gcpconfig/storage.py). Deliberately NOT the same path
+# GOOGLE_APPLICATION_CREDENTIALS/GCP_CREDENTIALS_HOST_PATH point at --
+# that's a read-only bind mount sourced from the host filesystem
+# (docker-compose.yml), so the app can never write there. This is a
+# subdirectory of the same writable scan-data volume SCAN_*_DIR already
+# use, extending that existing pattern rather than introducing a new one.
+GCP_CREDENTIALS_UPLOAD_DIR = os.environ.get("GCP_CREDENTIALS_UPLOAD_DIR", "/data/secrets")
 
 # Ink-coverage thresholds for blank-page detection (see PROJECT_SPEC.md).
 BLANK_PAGE_DROP_THRESHOLD_PCT = float(

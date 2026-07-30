@@ -7,6 +7,75 @@ Versioning is semantic-ish and appropriate to a pre-1.0, single-developer
 scaffold — a MINOR bump per meaningful milestone, PATCH reserved for fixes
 within one.
 
+## [0.11.0] - 2026-07-30
+
+New `gcpconfig` app: an admin-only setup wizard for GCP/Document AI
+configuration, replacing manual `.env`-only setup as the only option.
+
+### Added
+- `gcpconfig` app — `Configuration` model (singleton, `pk=1`), an
+  admin-only wizard view at `/gcp-setup/` walking staff through the
+  manual GCP console steps (project creation, billing, enabling the
+  API, creating a processor, creating a service account) with direct
+  console links, then a form collecting project ID + processor ID +
+  service account key (file upload). On submit, `validate.py` makes
+  one real, cheap Document AI `get_processor` call immediately;
+  `Configuration` is only saved if that call succeeds, and
+  distinguishable failures (bad credentials, wrong processor ID,
+  missing IAM role, etc.) are surfaced in the wizard UI via
+  `pipeline.ocr.describe_document_ai_error()` — shared, not
+  reimplemented separately.
+- `gcpconfig.middleware.RequireGcpConfigMiddleware` — redirects staff
+  users to the wizard on any page if nothing's configured yet.
+  Staff-scoped, not a blanket gate like 2FA enforcement, since non-staff
+  users can't act on it anyway.
+- `ingest.views.upload()` — refuses to queue a job at all if
+  unconfigured (distinct message for staff vs. non-staff), rather than
+  accepting the upload and letting it fail confusingly at the `ocr.py`
+  stage later.
+- `pipeline/ocr.py`: `_effective_config()` — checks the `Configuration`
+  DB row first, falls back to `settings.py`/`.env` if none exists,
+  resolved fresh on every OCR call rather than once at import time.
+  This is what lets a wizard submission take effect without restarting
+  the `worker` container: `web` (wizard) and `worker` (OCR) are
+  separate processes sharing only the DB and the `scan-data` volume,
+  not memory or environment variables. `_build_client()` now loads
+  credentials explicitly via `google.auth.load_credentials_from_file()`
+  when a DB-configured path exists, falling back to today's ambient
+  `google.auth.default()` behavior otherwise.
+- Uploaded keys land in `GCP_CREDENTIALS_UPLOAD_DIR` (default
+  `/data/secrets`, a new subdirectory of the existing writable
+  `scan-data` volume) with `0600` permissions, via
+  write-to-temp-then-rename so a failed validation can never clobber a
+  previously-working key.
+- Tests: `gcpconfig/tests.py` (19 tests — `Configuration`/
+  `is_configured()` DB-vs-fallback behavior, `validate_configuration()`
+  against each distinguishable mocked failure type, the wizard's
+  success/failure/non-clobbering/bad-upload paths, the middleware's
+  staff/non-staff/configured/exempt-path behavior); `pipeline/tests.py`
+  (`EffectiveConfigTests` — DB row wins over settings when present);
+  `ingest/tests.py` (`UploadConfiguredCheckTests` — non-staff blocked
+  with a clear message, staff's defensive check exercised directly via
+  `RequestFactory` since the middleware normally intercepts first,
+  upload allowed once DB-configured). All Document AI calls mocked, no
+  real billable calls in the automatic suite, matching `ocr.py`'s own
+  tests.
+
+### Notes
+Discovered, not caused, while verifying this in Docker: the `worker`
+service currently crash-loops (`ModuleNotFoundError: No module named
+'config'`) — `docker-compose.yml` runs it as `python
+worker/entrypoint.py`, which puts `worker/` rather than `/app` on
+`sys.path[0]`. Confirmed pre-existing via `git log` (no recent changes
+to `worker/entrypoint.py`/`Dockerfile`/`docker-compose.yml`) and left
+unfixed as its own, separate task — see `AGENTS.md` "Current state".
+The core cross-container claim above (DB config visible to `worker`
+without a restart) was still verified directly: a `Configuration` row
+written from `web` was confirmed readable via a separate process using
+the `worker` image/environment (`docker compose run --rm worker python
+manage.py shell`, bypassing the broken entrypoint script), not just
+asserted from the architecture.
+
 ## [0.10.0] - 2026-07-30
 
 `pipeline/ingest.py` is implemented — all 8 pipeline stages are now real,

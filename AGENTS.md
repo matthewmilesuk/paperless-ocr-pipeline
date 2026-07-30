@@ -59,6 +59,13 @@ pipeline/
   validate.py    - real verapdf CLI check, returns ValidationResult (compliant/parse_failure/summary)
   output.py      - moves to SCAN_OUTPUT_DIR/SCAN_FAILED_DIR, marks Job DONE/FAILED, cleans up intermediates
   run.py         - orchestrates the above, in this order
+
+gcpconfig/
+  models.py      - Configuration singleton (pk=1) + get_configuration()/is_configured()
+  views.py       - admin-only setup wizard (/gcp-setup/), validates before saving
+  validation.py  - one real, cheap Document AI get_processor() call, reuses ocr.py's error mapping
+  storage.py     - writes the uploaded key to GCP_CREDENTIALS_UPLOAD_DIR, temp-then-rename
+  middleware.py  - RequireGcpConfigMiddleware, staff-only redirect to the wizard when unconfigured
 ```
 
 Each stage is a plain function that takes a file path (or path-like object)
@@ -332,6 +339,31 @@ those rasterized images anymore. `pipeline/run.py` and
 `pipeline/reassemble.py` were updated accordingly (`cleaned_path` in,
 `OcrResult` out — no `page_images` parameter), since leaving call sites
 referencing a signature or file that no longer exists isn't an option.
+
+**The `gcpconfig` app (admin-only GCP/Document AI setup wizard) is now
+implemented and tested** — see PROJECT_SPEC.md "GCP / Document AI
+Configuration" for the full design (DB-first/`.env`-fallback
+resolution, the staff-scoped readiness gates, where the uploaded key
+lands). Verified: the full local + Dockerized test suite (61 tests,
+all mocked — no real Document AI calls), and manually, that a
+`Configuration` row written from the `web` container is picked up by a
+separate process using the `worker` container's image/environment with
+no restart, which is the core claim the whole DB-backed design rests
+on.
+
+**Known bug, discovered incidentally while verifying the above, not
+caused by or fixed as part of it: the `worker` service currently
+crash-loops** (`ModuleNotFoundError: No module named 'config'`).
+`docker-compose.yml` runs it as `python worker/entrypoint.py`, which
+puts `worker/`, not `/app`, on `sys.path[0]` — so `config.settings`
+isn't importable. `web`'s `python manage.py ...` and
+`gunicorn config.wsgi:application` don't have this problem since both
+run from `/app` directly. Confirmed pre-existing (untouched by the
+gcpconfig work — `git log` shows no recent changes to
+`worker/entrypoint.py`, `Dockerfile`, or `docker-compose.yml`) and not
+yet fixed. Likely fix: `cd /app && python -m worker.entrypoint`, or add
+`worker/__init__.py` + adjust the command, but pick this up as its own
+task rather than folding it into an unrelated change.
 
 ## Auth & job visibility
 

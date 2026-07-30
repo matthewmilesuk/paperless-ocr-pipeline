@@ -17,10 +17,17 @@ from pikepdf import Name, Operator
 from PIL import Image, ImageDraw, ImageFont
 from reportlab.pdfgen import canvas as reportlab_canvas
 
+from gcpconfig.models import Configuration
 from ingest.models import BorderlinePage, Job
 from pipeline.cleanup import MEASUREMENT_DPI, cleanup
 from pipeline.ingest import EmptyFileError, EmptyPdfError, UnreadablePdfError, ingest
-from pipeline.ocr import SYNC_PAGE_LIMIT, DocumentTooLongForSyncOCR, OcrResult, ocr_document
+from pipeline.ocr import (
+    SYNC_PAGE_LIMIT,
+    DocumentTooLongForSyncOCR,
+    OcrResult,
+    _effective_config,
+    ocr_document,
+)
 from pipeline.orient import orient
 from pipeline.output import deliver_failed, deliver_output
 from pipeline.pdfa import convert_to_pdfa
@@ -396,6 +403,42 @@ class OcrDocumentTests(TestCase):
                 ocr_document(input_pdf, job_id=6)
 
         self.assertTrue(any("processor not found" in message for message in logs.output))
+
+
+class EffectiveConfigTests(TestCase):
+    """
+    _effective_config() -- the actual consumer of gcpconfig.Configuration
+    inside the pipeline worker process. DB row wins when present; falls
+    back to settings.py/.env values when absent, so existing
+    manual-only setups keep working unchanged (see ocr.py's module
+    docstring).
+    """
+
+    def test_falls_back_to_settings_when_no_configuration_row_exists(self):
+        with override_settings(
+            GCP_PROJECT_ID="settings-project", GCP_DOCAI_PROCESSOR_ID="settings-processor"
+        ):
+            effective = _effective_config()
+
+        self.assertEqual(effective.project_id, "settings-project")
+        self.assertEqual(effective.processor_id, "settings-processor")
+        self.assertEqual(effective.credentials_path, "")
+
+    def test_database_row_wins_over_settings_when_present(self):
+        Configuration.objects.create(
+            gcp_project_id="db-project",
+            gcp_docai_processor_id="db-processor",
+            gcp_credentials_path="/data/secrets/gcp-credentials.json",
+        )
+
+        with override_settings(
+            GCP_PROJECT_ID="settings-project", GCP_DOCAI_PROCESSOR_ID="settings-processor"
+        ):
+            effective = _effective_config()
+
+        self.assertEqual(effective.project_id, "db-project")
+        self.assertEqual(effective.processor_id, "db-processor")
+        self.assertEqual(effective.credentials_path, "/data/secrets/gcp-credentials.json")
 
 
 class ReassembleTransformTests(TestCase):

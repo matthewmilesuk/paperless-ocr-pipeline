@@ -171,6 +171,63 @@ Everything reproducible via `docker-compose.yml` + a `.env.example` +
 a setup script. Should be shareable with other Paperless-NGX users, not
 just usable on this one machine.
 
+## GCP / Document AI Configuration
+
+The three values `pipeline/ocr.py` needs — GCP project ID, Document AI
+processor ID, and the service account key — can be set two ways:
+
+- **`.env`** (`GCP_PROJECT_ID`, `GCP_DOCAI_PROCESSOR_ID`,
+  `GOOGLE_APPLICATION_CREDENTIALS`), read once at process boot, same as
+  every other setting. This is the only mechanism before the wizard
+  existed, and still works unchanged for anyone who set it up this way.
+- **The `gcpconfig` app's admin-only setup wizard** (`/gcp-setup/`) —
+  walks a staff user through the manual GCP console steps that can't be
+  automated (create project, enable billing, enable the Document AI
+  API, create a processor, create a service account) with direct
+  console links at each step, then accepts the three values via a form
+  (the key as a file upload). On submit, it makes one real, cheap
+  Document AI call (`get_processor` — metadata only, not a
+  page-processing call) to validate the submission immediately;
+  distinguishable failures (bad credentials, wrong processor ID,
+  missing IAM role, etc. — the same mapping `ocr.py` uses for its own
+  error logging, `describe_document_ai_error()`) are surfaced in the
+  wizard UI, and nothing is saved unless validation actually passes.
+
+**DB wins, `.env` is the fallback.** `pipeline.ocr._effective_config()`
+checks `gcpconfig.models.Configuration` first (a singleton row, `pk=1`)
+and falls back to `.env`/`settings.py` only if no row exists yet — the
+resolution happens fresh on every OCR call, not once at import time.
+This matters because `web` (where the wizard runs) and `worker` (where
+`ocr_document()` actually executes) are separate OS processes in
+separate containers that don't share memory or environment variables —
+only the SQLite DB and the `scan-data` volume are shared between them.
+A DB-backed value is the only way a wizard submission can take effect
+without restarting `worker`.
+
+The uploaded key file is written to `GCP_CREDENTIALS_UPLOAD_DIR`
+(default `/data/secrets`, a subdirectory of the same writable
+`scan-data` volume `SCAN_INPUT_DIR`/`SCAN_OUTPUT_DIR`/`SCAN_FAILED_DIR`
+already use) with `0600` permissions, via a write-to-temp-then-rename
+so a failed validation can never clobber a previously-working key.
+This is deliberately not the same path `GOOGLE_APPLICATION_CREDENTIALS`
+points at — that's a read-only bind mount sourced from the host
+filesystem (`docker-compose.yml`), so the app could never write there
+even if it wanted to.
+
+**Readiness gates.** `gcpconfig.middleware.RequireGcpConfigMiddleware`
+redirects staff users to the wizard on any page if nothing is
+configured yet (DB or `.env`) — scoped to staff only, not a blanket
+gate like 2FA enforcement, since non-staff users have no ability to act
+on it. `ingest.views.upload()` separately refuses to queue a job at all
+if unconfigured, with a distinct message for staff vs. non-staff — this
+exists for non-staff users specifically, since the middleware normally
+keeps staff from ever reaching the upload page unconfigured in the
+first place.
+
+`GCP_DOCAI_LOCATION` is deliberately not one of the wizard's
+configurable values — it's a one-time-per-deployment choice, not
+something that benefits from live editing, so it stays `.env`-only.
+
 ## Things Deliberately Decided Against (for now)
 
 - ~~No authentication / user accounts.~~ **Superseded:** the web front end

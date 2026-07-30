@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Paperless OCR Pipeline - GCP Setup</title>
+</head>
+<body>
+  <nav>
+    <a href="{% url 'upload' %}">Upload</a> |
+    <a href="{% url 'job_list' %}">My Jobs</a> |
+    <a href="{% url 'logout' %}">Log out</a>
+  </nav>
+  <h1>Google Cloud / Document AI Setup</h1>
+
+  {% if configuration %}
+    <p>
+      <strong>Currently configured</strong> -- project
+      <code>{{ configuration.gcp_project_id }}</code>, processor
+      <code>{{ configuration.gcp_docai_processor_id }}</code>
+      (last updated {{ configuration.updated_at }}{% if configuration.updated_by %} by {{ configuration.updated_by }}{% endif %}).
+      Submitting the form below replaces this configuration -- it's only
+      saved if the new values are validated first, so this one keeps
+      working until then.
+    </p>
+  {% else %}
+    <p>OCR isn't configured yet. Complete the steps below, then submit the form.</p>
+  {% endif %}
+
+  <h2>1. Steps to do in the Google Cloud Console</h2>
+  <p>These can't be automated from here -- do them in order, in the GCP console:</p>
+  <ol>
+    <li>
+      <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">Create a GCP project</a>
+      (or pick an existing one). Note its <strong>project ID</strong> (not its display name) -- you'll need it below.
+    </li>
+    <li>
+      <a href="https://console.cloud.google.com/billing" target="_blank" rel="noopener">Enable billing</a>
+      for that project. Document AI won't work without a billing account attached, even within any free tier.
+    </li>
+    <li>
+      <a href="https://console.cloud.google.com/apis/library/documentai.googleapis.com" target="_blank" rel="noopener">Enable the Document AI API</a>
+      for that project.
+    </li>
+    <li>
+      <a href="https://console.cloud.google.com/ai/document-ai/processors" target="_blank" rel="noopener">Create a Document AI processor</a>
+      -- choose the "Document OCR" (Enterprise Document OCR) processor type. Note the
+      <strong>processor ID</strong> shown on its details page (not its display name) -- you'll need it below.
+    </li>
+    <li>
+      <a href="https://console.cloud.google.com/iam-admin/serviceaccounts" target="_blank" rel="noopener">Create a service account</a>
+      for this app (not your personal account), grant it the
+      <strong>Document AI API User</strong> role (<code>roles/documentai.apiUser</code>) on the project --
+      least privilege, not project owner -- then create and download a JSON key for it.
+      You'll upload that key file below.
+    </li>
+  </ol>
+
+  <h2>2. Enter the values from those steps</h2>
+  <form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit">Validate &amp; Save</button>
+  </form>
+  <p>
+    Submitting makes one real, billable (a fraction of a cent) test call to
+    Document AI to confirm these values actually work together before
+    anything is saved.
+  </p>
+</body>
+</html>

@@ -8,5 +8,6 @@ urlpatterns = [
     path("django-rq/", include("django_rq.urls")),
     path("accounts/logout/", LogoutView.as_view(next_page="two_factor:login"), name="logout"),
     path("", include(tf_urls)),
+    path("gcp-setup/", include("gcpconfig.urls")),
     path("", include("ingest.urls")),
 ]

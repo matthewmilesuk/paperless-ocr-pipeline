@@ -6,11 +6,14 @@ from unittest import mock
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ImproperlyConfigured
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings
+from django.test import RequestFactory, TestCase, override_settings
 from django_otp import DEVICE_ID_SESSION_KEY
 from django_otp.plugins.otp_static.models import StaticDevice
 
+from gcpconfig.models import Configuration
+
 from .models import Job
+from .views import upload
 
 User = get_user_model()
 
@@ -63,6 +66,74 @@ class UploadViewTests(TestCase):
         get_queue.return_value.enqueue.assert_called_once_with(
             "pipeline.run.run_pipeline", job.id
         )
+
+
+class UploadConfiguredCheckTests(TestCase):
+    """
+    upload()'s own is_configured() pre-flight check (ingest/views.py) --
+    refuses to queue a job that would just fail confusingly at the
+    ocr.py stage. Exercised at the two different levels it actually
+    matters at: non-staff via the normal Client (gcpconfig's
+    RequireGcpConfigMiddleware is staff-scoped, so non-staff really do
+    reach this code path in practice); staff via a direct view call
+    that bypasses middleware entirely, since in normal navigation a
+    staff user would already have been redirected to the setup wizard
+    before ever reaching this view while unconfigured -- see
+    gcpconfig/middleware.py and the docstring on upload() itself.
+    """
+
+    def setUp(self):
+        self.input_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.input_dir, ignore_errors=True)
+        override = override_settings(SCAN_INPUT_DIR=self.input_dir)
+        override.enable()
+        self.addCleanup(override.disable)
+
+    def _upload_file(self):
+        return SimpleUploadedFile(
+            "scan.pdf", b"%PDF-1.4 fake scan content", content_type="application/pdf"
+        )
+
+    @override_settings(
+        GCP_PROJECT_ID="", GCP_DOCAI_PROCESSOR_ID="", GOOGLE_APPLICATION_CREDENTIALS=""
+    )
+    def test_non_staff_upload_blocked_with_message_when_unconfigured(self):
+        user = User.objects.create_user("bob", password="pw12345", is_staff=False)
+        client = _verified_client(self.client, user, "pw12345")
+
+        response = client.post("/", {"file": self._upload_file()})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "administrator")
+        self.assertFalse(Job.objects.exists())
+
+    @mock.patch("ingest.views.django_rq.get_queue")
+    def test_upload_allowed_when_configured_via_db(self, get_queue):
+        Configuration.objects.create(
+            gcp_project_id="db-project",
+            gcp_docai_processor_id="db-processor",
+            gcp_credentials_path="/data/secrets/gcp-credentials.json",
+        )
+        user = User.objects.create_user("carol", password="pw12345", is_staff=False)
+        client = _verified_client(self.client, user, "pw12345")
+
+        response = client.post("/", {"file": self._upload_file()})
+
+        self.assertTrue(Job.objects.exists())
+        self.assertEqual(response.status_code, 302)
+
+    @override_settings(
+        GCP_PROJECT_ID="", GCP_DOCAI_PROCESSOR_ID="", GOOGLE_APPLICATION_CREDENTIALS=""
+    )
+    def test_staff_upload_shows_setup_message_when_unconfigured(self):
+        staff = User.objects.create_user("dave", password="pw12345", is_staff=True)
+        request = RequestFactory().post("/", {"file": self._upload_file()})
+        request.user = staff
+
+        response = upload(request)
+
+        self.assertContains(response, "complete GCP setup")
+        self.assertFalse(Job.objects.exists())
 
 
 class WatcherJobCreationTests(TestCase):

@@ -38,6 +38,13 @@ original plan):
   leaving a job unattributed). Covered by tests in `ingest/tests.py`.
 - docker-compose scaffold (web, worker, redis, samba, watcher) and a
   Dockerfile that builds.
+- **Admin-only GCP/Document AI setup wizard** (`gcpconfig` app,
+  `/gcp-setup/`) — walks a staff user through the manual GCP console
+  steps, accepts project ID/processor ID/service account key via a
+  form, and validates with one real, cheap Document AI call before
+  saving. DB-backed config takes priority over `.env`, resolved fresh
+  on every OCR call so it takes effect without restarting the `worker`
+  container. See "GCP / Document AI Configuration" below.
 - **All eight pipeline stages are real, not stubs**, each covered by
   tests in `pipeline/tests.py`. **`pipeline.run.run_pipeline()` has now
   been run once, successfully, end to end against a real scan uploaded
@@ -273,6 +280,42 @@ Everything reproducible via `docker-compose.yml` + a `.env.example` +
 a setup script. Should be shareable with other Paperless-NGX users, not
 just usable on this one machine.
 
+## GCP / Document AI Configuration
+
+The three values `pipeline/ocr.py` needs — GCP project ID, Document AI
+processor ID, and the service account key — can be set two ways:
+
+- **`.env`** (`GCP_PROJECT_ID`, `GCP_DOCAI_PROCESSOR_ID`,
+  `GOOGLE_APPLICATION_CREDENTIALS`), read once at process boot. This is
+  the original mechanism and still works unchanged.
+- **The admin-only setup wizard** (`/gcp-setup/`) — walks a staff user
+  through the manual GCP console steps that can't be automated (create
+  project, enable billing, enable the Document AI API, create a
+  processor, create a service account) with direct console links at
+  each step, then accepts the three values via a form (the key as a
+  file upload). On submit it makes one real, cheap Document AI call
+  (`get_processor`) to validate immediately; distinguishable failures
+  (bad credentials, wrong processor ID, missing IAM role) are surfaced
+  in the wizard UI, and nothing is saved unless validation passes.
+
+**DB wins, `.env` is the fallback**, resolved fresh on every OCR call
+(`pipeline.ocr._effective_config()`) — not read once at import time.
+This matters because `web` (where the wizard runs) and `worker` (where
+OCR actually executes) are separate processes that don't share memory,
+only the SQLite DB and the `scan-data` volume — a DB-backed value is
+the only way a wizard submission takes effect without restarting
+`worker`.
+
+The uploaded key is written to `GCP_CREDENTIALS_UPLOAD_DIR` (default
+`/data/secrets`, on the same writable `scan-data` volume the scan
+folders use) with `0600` permissions, via write-to-temp-then-rename so
+a failed validation can never clobber a previously-working key.
+
+A staff user is redirected to the wizard on any page if nothing's
+configured yet; uploads are refused outright (with a distinct message
+for staff vs. everyone else) if unconfigured, so a job never gets
+queued only to fail confusingly at the OCR stage.
+
 ## Things Deliberately Decided Against (for now)
 
 - ~~No authentication / user accounts.~~ **Superseded:** the web front end
@@ -314,13 +357,21 @@ which must already exist (create it with `manage.py createsuperuser`).
 
 ## Getting Started
 
-1. Copy `.env.example` to `.env` and fill in your values (GCP credentials,
-   processor IDs, SMTP settings, folder paths, `DEFAULT_JOB_OWNER_USERNAME`)
-   — `./setup.sh` will do this for you with placeholder values if you skip
-   it, but real GCP/SMTP/Samba values are still needed before the pipeline
-   can actually run.
-2. Drop your GCP service account key JSON where `.env` points
-   `GOOGLE_APPLICATION_CREDENTIALS` to.
+1. Copy `.env.example` to `.env` and fill in your values (SMTP settings,
+   folder paths, `DEFAULT_JOB_OWNER_USERNAME`) — `./setup.sh` will do this
+   for you with placeholder values if you skip it, but real SMTP/Samba
+   values are still needed before the pipeline can actually run.
+2. GCP/Document AI setup (project ID, processor ID, service account key)
+   can be done two ways:
+   - **Manually**, in `.env`: fill in `GCP_PROJECT_ID`,
+     `GCP_DOCAI_PROCESSOR_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, and drop
+     the service account key JSON where that last path points.
+   - **Or via the setup wizard** after logging in (step 4 below) — as a
+     staff user, visit `/gcp-setup/` (or just follow the redirect there,
+     since staff users get sent to it automatically until something's
+     configured) for step-by-step console links and a form that takes
+     the key as a file upload, validated live before saving. See "GCP /
+     Document AI Configuration" above for how the two interact.
 3. Run `./setup.sh`. It builds the image, starts `web` + `redis` (not
    `samba`/`watcher` yet — those need the real config from steps 1-2
    first), and waits for migrations to finish (these run automatically on
