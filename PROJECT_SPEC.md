@@ -44,7 +44,12 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
 1. **Ingest** — file lands in the Samba input folder. A `watchdog`-based
    watcher process detects the new file and kicks off the pipeline. The same
    pipeline function is also triggered by the web UI upload, so there's one
-   code path regardless of entry point.
+   code path regardless of entry point. A small validation gate, not a
+   transformation: confirms the file genuinely opens as a PDF via
+   `pikepdf` (not just a `.pdf` extension) and has at least one page,
+   rejecting an empty file, a corrupted/non-PDF file, and a
+   technically-valid zero-page PDF as three distinct, clearly-logged
+   failure cases.
 
 2. **Cleanup pass (custom blank-page detection)**
    - Blank page removal only. Deskew/auto-rotate is a separate stage

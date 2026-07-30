@@ -50,7 +50,7 @@ once a validated PDF/A lands in the output folder.
 
 ```
 pipeline/
-  ingest.py      - watcher/upload hands off a raw scan here (STUB -- see "Current state")
+  ingest.py      - validates a real, non-empty, >=1-page PDF via pikepdf before anything else runs
   cleanup.py     - custom blank-page detection (rasterize + ink coverage)
   orient.py      - ocrmypdf --deskew --rotate-pages, BEFORE any text layer exists
   ocr.py         - calls Google Document AI (sync, <=15 pages), returns OcrResult
@@ -180,22 +180,35 @@ own docstring for details.
 
 ## Current state (check before assuming something works)
 
-**`pipeline/ingest.py` (stage 1) is the one remaining `NotImplementedError`
-stub — and it's the *first* stage `run_pipeline()` calls.** Every other
-stage (`cleanup.py` through `output.py`, 7 of 8) is now implemented and
-tested, but `run_pipeline()` still cannot complete a real run: it raises
-immediately on `ingest.ingest(input_path)`, before touching any of the
-working stages after it. Don't describe this as "the pipeline works end
-to end" — it doesn't, yet, on account of the one stage nobody's built.
-Implementing `ingest.py` and then actually running the full chain against
-a real scan are both still ahead, and are a different piece of work from
-what's covered below.
+**All 8 pipeline stages are now implemented and tested** —
+`ingest.py`, `cleanup.py`, `orient.py`, `ocr.py`, `reassemble.py`,
+`pdfa.py`, `validate.py`, `output.py`, each covered by real tests in
+`pipeline/tests.py`. `pipeline/split.py` no longer exists (see below for
+why).
 
-`pipeline/cleanup.py`, `pipeline/orient.py`, `pipeline/ocr.py`,
-`pipeline/reassemble.py`, `pipeline/pdfa.py`, `pipeline/validate.py`, and
-`pipeline/output.py` are implemented and tested (`pipeline/tests.py`).
-`pipeline/split.py` no longer exists — see below.
+**This does NOT mean the pipeline has ever been run end to end against
+a real scan.** Every stage is tested in isolation (real tools where it
+matters — tesseract/ghostscript/pngquant/verapdf are never mocked; only
+Google Document AI is, since that costs real money per call) but nothing
+has yet exercised the full chain, `run_pipeline()`, against one actual
+document from start to finish. That's the next real milestone, a
+different piece of work from "every stage individually works" — don't
+conflate the two, and don't report this project as "working" until
+that's actually been done and verified, not just assumed because the
+pieces are all there.
 
+- `ingest.py` — the one stage that's a small validation gate rather than
+  a transformation: confirms the input genuinely opens as a PDF via
+  `pikepdf` (not a `.pdf`-extension/header sniff) and returns it
+  unchanged. Three distinct, separately-tested failure cases, each
+  logged and raised as its own exception type rather than a generic
+  one: `EmptyFileError` (zero-byte file), `UnreadablePdfError`
+  (`pikepdf.PdfError` — corrupted, or not actually a PDF despite the
+  extension), `EmptyPdfError` (opens fine, has zero pages — a real,
+  separately-constructible case, confirmed empirically before writing
+  the check: `pikepdf.new()` with no pages added saves and reopens
+  without error, so this genuinely needs its own check, not just
+  reliance on the open() call failing).
 - `cleanup.py` rasterizes each page via `pdf2image`, measures ink
   coverage, drops confidently-blank pages, and logs borderline ones as
   `ingest.models.BorderlinePage`. Returns `CleanupResult` (cleaned PDF

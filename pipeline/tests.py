@@ -19,6 +19,7 @@ from reportlab.pdfgen import canvas as reportlab_canvas
 
 from ingest.models import BorderlinePage, Job
 from pipeline.cleanup import MEASUREMENT_DPI, cleanup
+from pipeline.ingest import EmptyFileError, EmptyPdfError, UnreadablePdfError, ingest
 from pipeline.ocr import SYNC_PAGE_LIMIT, DocumentTooLongForSyncOCR, OcrResult, ocr_document
 from pipeline.orient import orient
 from pipeline.output import deliver_failed, deliver_output
@@ -901,3 +902,42 @@ class OutputTests(TestCase):
         self.assertTrue(dest.exists())
         self.assertEqual(dest.read_bytes(), b"cross device content")
         self.assertFalse(src.exists())
+
+
+class IngestTests(TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp_dir, ignore_errors=True)
+
+    def test_valid_pdf_passes_through_unchanged(self):
+        path = Path(self.tmp_dir) / "valid.pdf"
+        with pikepdf.new() as pdf:
+            pdf.add_blank_page(page_size=(200, 200))
+            pdf.save(str(path))
+
+        result = ingest(path, job_id=1)
+
+        self.assertEqual(result, path)
+        self.assertTrue(path.exists())
+
+    def test_empty_file_is_rejected(self):
+        path = Path(self.tmp_dir) / "empty.pdf"
+        path.write_bytes(b"")
+
+        with self.assertRaises(EmptyFileError):
+            ingest(path, job_id=2)
+
+    def test_corrupted_non_pdf_file_is_rejected(self):
+        path = Path(self.tmp_dir) / "garbage.pdf"
+        path.write_text("this is not a pdf at all")
+
+        with self.assertRaises(UnreadablePdfError):
+            ingest(path, job_id=3)
+
+    def test_zero_page_pdf_is_rejected(self):
+        path = Path(self.tmp_dir) / "zero_page.pdf"
+        with pikepdf.new() as pdf:
+            pdf.save(str(path))  # no pages added -- technically valid, zero pages
+
+        with self.assertRaises(EmptyPdfError):
+            ingest(path, job_id=4)

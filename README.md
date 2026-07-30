@@ -38,10 +38,23 @@ original plan):
   leaving a job unattributed). Covered by tests in `ingest/tests.py`.
 - docker-compose scaffold (web, worker, redis, samba, watcher) and a
   Dockerfile that builds.
-- **Seven of the eight pipeline stages are real, not stubs**, each
-  covered by tests in `pipeline/tests.py` — see "Still a stub" below for
-  the one that isn't, and why that still blocks a real end-to-end run
-  despite how much of this list says "implemented":
+- **All eight pipeline stages are real, not stubs**, each covered by
+  tests in `pipeline/tests.py`. **This does not mean the pipeline has
+  ever been run end to end against a real scan** — every stage is
+  tested in isolation (real tools where it matters; only Google
+  Document AI is mocked, since that costs real money per call), but
+  nothing has yet exercised the full chain, `pipeline.run.run_pipeline()`,
+  against one actual document start to finish. That's the next real
+  milestone — a genuinely different thing from "every stage
+  individually works," and not something to claim done based on this
+  list:
+  - `ingest.py` — a small validation gate, not a transformation:
+    confirms the input genuinely opens as a PDF via `pikepdf` (not a
+    `.pdf`-extension sniff) and has at least one page. Three distinct,
+    separately-tested failure cases: empty file, corrupted/non-PDF
+    file, and a technically-valid zero-page PDF (confirmed as a real,
+    separately-constructible case before writing the check, not
+    assumed).
   - `cleanup.py` — custom blank-page detection (rasterize, measure ink
     coverage, drop confidently-blank pages, log borderline ones).
   - `orient.py` — deskew/auto-rotate via ocrmypdf, run before Document AI
@@ -75,18 +88,22 @@ original plan):
     collide. Atomic move where the filesystem allows it. Also cleans up
     this job's intermediate pipeline files, since no earlier stage does.
 
-**Still a stub / not working yet:**
-- **`pipeline/ingest.py` raises `NotImplementedError`** — and it's
-  stage 1, the *first* thing `pipeline/run.py` calls. Every stage after
-  it (`cleanup.py` through `output.py`) is implemented, but that doesn't
-  mean the pipeline works end to end yet: `run_pipeline()` still fails
-  immediately on the ingest call, before ever reaching the working
-  stages. Implementing `ingest.py` and then actually exercising the full
-  chain against a real scan are both still ahead. The web upload view
-  still enqueues the job regardless, so that Django-RQ job will fail in
-  the worker; the watcher doesn't enqueue anything yet at all (see
-  `watcher/watch.py`'s `handle_new_scan`), since there's nothing fully
-  working downstream for it to hand off to.
+**Still missing / not working yet, even though every stage is implemented:**
+- **No real end-to-end run against an actual scan has been done.** Every
+  `pipeline/*.py` stage has its own tests, but `run_pipeline()` as a
+  whole, driving a real document from Samba-drop or upload through to a
+  delivered PDF/A, has not been exercised. That's the next real
+  milestone.
+- **No failure handling between stages.** `run_pipeline()` doesn't catch
+  exceptions from `ingest`/`cleanup`/`orient`/`ocr`/`reassemble`/`pdfa` —
+  an exception from any of those propagates uncaught and the job is left
+  stuck, not routed to `output.deliver_failed()`. Only a veraPDF
+  *validation* failure (the last possible failure point) is currently
+  handled and delivered to `failed/`.
+- The web upload view enqueues the job regardless of any of the above,
+  so that Django-RQ job can currently fail in the worker with no
+  handling; the watcher doesn't enqueue anything yet at all (see
+  `watcher/watch.py`'s `handle_new_scan`).
 - No synchronous-vs-async cutover logic (`SYNCHRONOUS_BATCH_SIZE_LIMIT` is
   a setting; nothing reads it yet).
 - No completion emails (SMTP settings exist; nothing calls `send_mail()`).
@@ -147,7 +164,11 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
 1. **Ingest** — file lands in the Samba input folder. A `watchdog`-based
    watcher process detects the new file and kicks off the pipeline. The same
    pipeline function is also triggered by the web UI upload, so there's one
-   code path regardless of entry point.
+   code path regardless of entry point. A small validation gate, not a
+   transformation: confirms the file genuinely opens as a PDF via
+   `pikepdf` and has at least one page — rejects an empty file, a
+   corrupted/non-PDF file, and a technically-valid zero-page PDF as
+   three distinct, clearly-logged failure cases.
 
 2. **Cleanup pass (custom blank-page detection)**
    - Blank page removal only — deskew/auto-rotate is a separate stage

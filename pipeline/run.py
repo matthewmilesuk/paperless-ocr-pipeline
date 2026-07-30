@@ -23,11 +23,11 @@ def run_pipeline(job_id: int) -> None:
     Updates the Job's status/output_path/error_message as it progresses,
     and emails the user on completion for async (queued) runs.
 
-    NOTE: pipeline/ingest.py (stage 1) is still a NotImplementedError
-    stub -- this function cannot actually complete a real run yet, even
-    though every stage from cleanup.py onward is implemented. Don't
-    assume this works end to end just because it reads that way below;
-    check ingest.py's own status first (see AGENTS.md "Current state").
+    NOTE: every stage is now implemented (see AGENTS.md "Current
+    state"), but this has never actually been run against a real scan
+    end to end -- that's the next real test, not something covered by
+    any single stage's own tests. Don't assume it works in practice
+    just because every piece works in isolation.
 
     TODO:
       - Load the Job, set status=PROCESSING.
@@ -44,7 +44,7 @@ def run_pipeline(job_id: int) -> None:
 
     input_path = Path(job.input_path)
 
-    validated_input = ingest.ingest(input_path)
+    validated_input = ingest.ingest(input_path, job_id)
     cleanup_result = cleanup.cleanup(validated_input, job_id)
     cleaned_path = cleanup_result.output_path
     # cleanup_result.pages_dropped / .pages_borderline are available here
