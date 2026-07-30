@@ -1,0 +1,30 @@
+<!--
+  IzPack automated-install config for veraPDF's installer
+  (verapdf-izpack-installer-1.30.2.jar, from the veraPDF 1.30.2 greenfield
+  installer). Generated and verified against that exact installer version;
+  see Dockerfile and AGENTS.md "Local development" for how it's used and
+  how to bump the pinned veraPDF version.
+
+  IzPack installer prompts/panel IDs can change between installer
+  versions. If veraPDF's version is ever bumped, re-verify this file
+  still matches the new installer's panels (run it interactively once,
+  or check its own install.xml/panel definitions) before assuming it
+  still works; don't just swap the version number in the Dockerfile and
+  assume this file is still valid.
+
+  Selects only the CLI scripts pack (no GUI, no docs) for a minimal
+  container footprint, installing to /opt/verapdf.
+-->
+<AutomatedInstallation langpack="eng">
+    <com.izforge.izpack.panels.htmlhello.HTMLHelloPanel id="welcome"/>
+    <com.izforge.izpack.panels.target.TargetPanel id="install_dir">
+        <installpath>/opt/verapdf</installpath>
+    </com.izforge.izpack.panels.target.TargetPanel>
+    <com.izforge.izpack.panels.packs.PacksPanel id="sdk_pack_select">
+        <pack index="0" name="veraPDF GUI" selected="false"/>
+        <pack index="1" name="veraPDF Mac and *nix Scripts" selected="true"/>
+        <pack index="3" name="veraPDF Documentation" selected="false"/>
+    </com.izforge.izpack.panels.packs.PacksPanel>
+    <com.izforge.izpack.panels.install.InstallPanel id="install"/>
+    <com.izforge.izpack.panels.finish.FinishPanel id="finish"/>
+</AutomatedInstallation>

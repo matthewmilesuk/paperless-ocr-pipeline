@@ -126,6 +126,23 @@ own docstring for details.
     `requirements.in` itself is broken. See
     `verification-logs/2026-07-30-pin-dependencies.md` for the exact
     failure this produced.
+- **veraPDF (Dockerfile, `pipeline/validate.py`) is pinned differently —
+  no pip-tools-style lockfile exists for it.** It's not a Python package;
+  it's installed in the Dockerfile via a versioned download URL
+  (`software.verapdf.org/releases/1.30/verapdf-greenfield-1.30.2-installer.zip`)
+  run through its own IzPack installer, non-interactively via
+  `docker/verapdf-auto-install.xml`. To deliberately bump the version:
+  1. Update the version number in both the download URL and the `cd`
+     path in the Dockerfile's veraPDF `RUN` step.
+  2. **Re-verify `docker/verapdf-auto-install.xml` still matches the new
+     installer** before assuming it works — IzPack panel IDs/prompts can
+     change between installer versions, and this file was generated and
+     verified against 1.30.2's installer specifically, not derived from
+     anything that updates automatically.
+  3. Rebuild the image and confirm `verapdf --version` reports the new
+     version, then re-run `pipeline/tests.py`'s `validate.py` tests
+     against real files in the rebuilt container (not just locally) --
+     same as any other Dockerfile dependency change.
 - See `verification-logs/` for dated records of local-vs-container
   verification runs (`manage.py check` / `makemigrations --check --dry-run`
   / `test`), so drift like this can be diffed against a real prior run
