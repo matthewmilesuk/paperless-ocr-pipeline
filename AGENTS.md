@@ -143,6 +143,18 @@ own docstring for details.
      version, then re-run `pipeline/tests.py`'s `validate.py` tests
      against real files in the rebuilt container (not just locally) --
      same as any other Dockerfile dependency change.
+  - **Known oddity, already investigated, don't re-chase it**: local
+    (Homebrew `verapdf`) and the Dockerfile-pinned installer are
+    nominally the same release, but `verapdf --version` reports
+    `"veraPDF 1.30.0"` locally vs `"veraPDF 1.30.2"` in the container.
+    All 29 `pipeline/tests.py` tests pass identically in both
+    environments, so this looks like a version-string/labeling quirk
+    between the two distributions, not a functional difference -- it
+    wasn't dug into further than that (e.g. why the two distributions
+    disagree on the string). If real behavioral differences ever turn up
+    between local and container `validate.py` runs, this mismatch is a
+    reasonable first place to look, but treat it as background noise
+    until then rather than assuming it's benign forever.
 - See `verification-logs/` for dated records of local-vs-container
   verification runs (`manage.py check` / `makemigrations --check --dry-run`
   / `test`), so drift like this can be diffed against a real prior run

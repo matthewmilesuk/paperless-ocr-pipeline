@@ -7,6 +7,60 @@ Versioning is semantic-ish and appropriate to a pre-1.0, single-developer
 scaffold — a MINOR bump per meaningful milestone, PATCH reserved for fixes
 within one.
 
+## [0.9.0] - 2026-07-30
+
+`pipeline/validate.py` is implemented and tested, plus the veraPDF
+Dockerfile infrastructure it depends on.
+
+### Added
+- veraPDF added to the Dockerfile: `default-jre-headless` (JRE), `wget`
+  (picked over `curl` for footprint: ~5 dependency packages vs ~20,
+  confirmed via dry runs of each), and `unzip`, then a non-interactive
+  install via a version-pinned URL
+  (`software.verapdf.org/releases/1.30/verapdf-greenfield-1.30.2-installer.zip`)
+  and a new checked-in `docker/verapdf-auto-install.xml` (IzPack's
+  automated-install config, built and verified against the 1.30.2
+  installer specifically — noted as needing re-verification, not just a
+  version-number swap, if the pinned version is ever bumped, since
+  IzPack panel IDs can change between installer versions).
+- `pipeline/validate.py` — calls the real `verapdf` CLI (`--flavour 2b
+  --format json`) and parses its JSON report, handling three outcomes
+  confirmed against real files before writing this (a genuine
+  ocrmypdf-produced PDF/A-2b, a deliberately non-compliant PDF, and a
+  garbage/unparseable file):
+  - Exit 0, `compliant: true` → pass.
+  - Exit 1, `compliant: false` → genuine PDF/A-2b non-compliance, logged
+    with the specific rule violations (ISO clause + description) from
+    `details.ruleSummaries`, not just "failed".
+  - Exit 7, `taskException` present instead of `validationResult` → a
+    distinct, more alarming failure mode: veraPDF couldn't parse the
+    file at all, meaning something upstream in the pipeline produced a
+    broken file rather than a legitimate document merely failing a
+    compliance check.
+  - Returns `ValidationResult` (compliant, parse_failure, a
+    human-readable summary, and the full parsed report) instead of a
+    bare `bool`.
+- `pipeline/tests.py` — 3 new tests, deliberately not mocking veraPDF
+  (its own CLI/JSON behavior is what's under test): a real PDF/A-2b
+  passes, a non-compliant PDF fails with rule details captured, and a
+  garbage file hits the parse-failure path distinctly. Verified passing
+  identically both locally (Homebrew `verapdf`) and in a rebuilt Docker
+  container.
+
+### Changed
+- `pipeline/run.py`: uses `validation_result.compliant` for the
+  pass/fail branch and threads `.summary` into
+  `output.deliver_failed()`'s `reason=`, instead of the previous
+  hardcoded `"veraPDF validation failed"` string.
+- `AGENTS.md`: added a pinning note for veraPDF next to the pip-tools
+  upgrade guidance (no lockfile mechanism exists for it — bumping the
+  version means manually updating the Dockerfile URL and re-verifying
+  the automated-install XML), plus a note on a known, already-verified
+  version-string mismatch (local Homebrew `verapdf` reports itself as
+  "1.30.0", the Dockerfile-pinned installer as "1.30.2" — all 29 tests
+  pass identically in both, so treated as a labeling quirk between
+  distributions, not investigated further).
+
 ## [0.8.0] - 2026-07-30
 
 First pipeline stages touching real external tools (tesseract,
