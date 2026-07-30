@@ -38,8 +38,10 @@ original plan):
   leaving a job unattributed). Covered by tests in `ingest/tests.py`.
 - docker-compose scaffold (web, worker, redis, samba, watcher) and a
   Dockerfile that builds.
-- **Six pipeline stages are real, not stubs**, each covered by tests in
-  `pipeline/tests.py`:
+- **Seven of the eight pipeline stages are real, not stubs**, each
+  covered by tests in `pipeline/tests.py` — see "Still a stub" below for
+  the one that isn't, and why that still blocks a real end-to-end run
+  despite how much of this list says "implemented":
   - `cleanup.py` — custom blank-page detection (rasterize, measure ink
     coverage, drop confidently-blank pages, log borderline ones).
   - `orient.py` — deskew/auto-rotate via ocrmypdf, run before Document AI
@@ -67,14 +69,22 @@ original plan):
     since it points at a pipeline bug rather than a routine compliance
     miss. Tests run against real files (compliant, non-compliant,
     unparseable), not mocked.
+  - `output.py` — moves the validated PDF/A into `SCAN_OUTPUT_DIR`
+    (success) or `SCAN_FAILED_DIR` (failure, kept for manual review, not
+    deleted), named `{job.id}_{original filename}` so two jobs can never
+    collide. Atomic move where the filesystem allows it. Also cleans up
+    this job's intermediate pipeline files, since no earlier stage does.
 
 **Still a stub / not working yet:**
-- **The remaining `pipeline/*.py` stage functions raise
-  `NotImplementedError`** (`ingest.py`, `output.py`).
-  `pipeline/run.py` orchestrates all stages in order, but running it
-  fails at the first remaining stub. The web upload view
-  still enqueues it regardless, so that Django-RQ job will fail in the
-  worker; the watcher doesn't enqueue anything yet at all (see
+- **`pipeline/ingest.py` raises `NotImplementedError`** — and it's
+  stage 1, the *first* thing `pipeline/run.py` calls. Every stage after
+  it (`cleanup.py` through `output.py`) is implemented, but that doesn't
+  mean the pipeline works end to end yet: `run_pipeline()` still fails
+  immediately on the ingest call, before ever reaching the working
+  stages. Implementing `ingest.py` and then actually exercising the full
+  chain against a real scan are both still ahead. The web upload view
+  still enqueues the job regardless, so that Django-RQ job will fail in
+  the worker; the watcher doesn't enqueue anything yet at all (see
   `watcher/watch.py`'s `handle_new_scan`), since there's nothing fully
   working downstream for it to hand off to.
 - No synchronous-vs-async cutover logic (`SYNCHRONOUS_BATCH_SIZE_LIMIT` is
@@ -211,7 +221,12 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
    rule violation from veraPDF being unable to parse the file at all
    (the latter meaning a bug upstream in the pipeline, logged louder).
 
-8. **Output** — finished PDF/A lands in the folder Paperless-NGX watches.
+8. **Output** — finished PDF/A lands in the folder Paperless-NGX watches
+   (or `failed/` on validation failure, kept for manual review, never
+   deleted), named `{job.id}_{original filename}` so two jobs can never
+   collide. Atomic move where the filesystem allows it, never
+   copy-then-delete. Also cleans up this job's intermediate pipeline
+   files from the output folder.
 
 ## Processing Mode
 

@@ -133,7 +133,15 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
    legitimate document merely failing a compliance check — logged more
    loudly, since it points at a real bug rather than a routine edge case.
 
-8. **Output** — finished PDF/A lands in the folder Paperless-NGX watches.
+8. **Output** — finished PDF/A lands in the folder Paperless-NGX watches
+   (on validation failure, in `failed/` instead — kept for manual review,
+   never deleted). Filename is `{job.id}_{original filename}`, so two
+   jobs can never collide even if their source filenames match. The move
+   is atomic where the filesystem allows it (same-volume rename, not
+   copy-then-delete, so nothing half-written is ever visible to
+   Paperless-NGX's watcher). Also removes this job's intermediate
+   pipeline files from the output folder — nothing upstream cleans up
+   after itself.
 
 ## Processing Mode
 
@@ -247,7 +255,14 @@ just usable on this one machine.
 
 ## Open Questions / To Be Decided
 
-- Exact naming/tagging convention for output files.
+- ~~Exact naming/tagging convention for output files.~~ **Resolved:**
+  `{job.id}_{original filename}` (`pipeline/output.py`) — the job ID
+  guarantees no collision even when two jobs share a source filename.
 - Behavior when a job fails partway through (retry? quarantine? notify?).
-- Whether the "borderline blank page" log should be a flat file, a DB
-  table visible in the Django admin, or something else.
+  Still open for failures at any pipeline *stage* — `run.py` doesn't
+  catch exceptions from cleanup/orient/ocr/reassemble/pdfa yet, only
+  routes a veraPDF *validation* failure to `output.deliver_failed()`.
+- ~~Whether the "borderline blank page" log should be a flat file, a DB
+  table visible in the Django admin, or something else.~~ **Resolved:**
+  a DB table, `ingest.models.BorderlinePage` (visible in Django admin),
+  populated by `pipeline/cleanup.py`.

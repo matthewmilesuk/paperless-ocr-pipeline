@@ -1,3 +1,4 @@
+import errno
 import io
 import shutil
 import tempfile
@@ -20,6 +21,7 @@ from ingest.models import BorderlinePage, Job
 from pipeline.cleanup import MEASUREMENT_DPI, cleanup
 from pipeline.ocr import SYNC_PAGE_LIMIT, DocumentTooLongForSyncOCR, OcrResult, ocr_document
 from pipeline.orient import orient
+from pipeline.output import deliver_failed, deliver_output
 from pipeline.pdfa import convert_to_pdfa
 from pipeline.reassemble import (
     _PageGeometry,
@@ -777,3 +779,125 @@ class ValidateTests(TestCase):
         self.assertFalse(result.compliant)
         self.assertTrue(result.parse_failure)
         self.assertIn("parse", result.summary.lower())
+
+
+class OutputTests(TestCase):
+    def setUp(self):
+        self.output_dir = tempfile.mkdtemp()
+        self.failed_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.output_dir, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, self.failed_dir, ignore_errors=True)
+        override = override_settings(
+            SCAN_OUTPUT_DIR=self.output_dir, SCAN_FAILED_DIR=self.failed_dir
+        )
+        override.enable()
+        self.addCleanup(override.disable)
+
+    def _make_job(self, original_filename="scan.pdf"):
+        return Job.objects.create(
+            original_filename=original_filename,
+            source=Job.Source.WATCHER,
+            input_path="/tmp/whatever.pdf",
+        )
+
+    def _make_real_pdf(self, name, marker_text="content"):
+        """A genuinely valid, openable single-page PDF (not just raw
+        bytes) so post-move integrity checks mean something."""
+        path = Path(self.output_dir) / name
+        with pikepdf.new() as pdf:
+            pdf.add_blank_page(page_size=(200, 200))
+            pdf.docinfo["/Title"] = marker_text
+            pdf.save(str(path))
+        return path
+
+    def _make_intermediates(self, job_id):
+        paths = []
+        for suffix in ("cleaned", "oriented", "reassembled"):
+            path = Path(self.output_dir) / f"{job_id}_{suffix}.pdf"
+            path.write_bytes(b"intermediate placeholder")
+            paths.append(path)
+        return paths
+
+    def test_successful_delivery_lands_in_output_and_marks_job_done(self):
+        job = self._make_job(original_filename="scan.pdf")
+        self._make_intermediates(job.id)
+        pdfa_path = self._make_real_pdf(f"{job.id}_pdfa.pdf", marker_text="the real output")
+
+        result_path = deliver_output(pdfa_path, Path(self.output_dir), job)
+
+        self.assertEqual(result_path, Path(self.output_dir) / f"{job.id}_scan.pdf")
+        self.assertTrue(result_path.exists())
+        with pikepdf.open(result_path) as pdf:
+            self.assertEqual(str(pdf.docinfo["/Title"]), "the real output")
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.DONE)
+        self.assertEqual(job.output_path, str(result_path))
+
+        for suffix in ("cleaned", "oriented", "reassembled"):
+            self.assertFalse((Path(self.output_dir) / f"{job.id}_{suffix}.pdf").exists())
+
+    def test_failed_delivery_lands_in_failed_dir_intact_with_reason(self):
+        job = self._make_job(original_filename="scan.pdf")
+        self._make_intermediates(job.id)
+        pdfa_path = self._make_real_pdf(f"{job.id}_pdfa.pdf", marker_text="the broken output")
+
+        result_path = deliver_failed(
+            pdfa_path,
+            Path(self.failed_dir),
+            job,
+            reason="Not PDF/A-2b compliant: ISO 19005-2:2011 6.6.2.1: missing metadata",
+        )
+
+        self.assertEqual(result_path, Path(self.failed_dir) / f"{job.id}_scan.pdf")
+        self.assertTrue(result_path.exists())
+        # Genuinely still openable, not corrupted by the move.
+        with pikepdf.open(result_path) as pdf:
+            self.assertEqual(str(pdf.docinfo["/Title"]), "the broken output")
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, Job.Status.FAILED)
+        self.assertEqual(job.output_path, str(result_path))
+        self.assertIn("6.6.2.1", job.error_message)
+
+    def test_naming_collision_between_two_jobs_does_not_overwrite(self):
+        job1 = self._make_job(original_filename="scan.pdf")
+        job2 = self._make_job(original_filename="scan.pdf")
+        self.assertNotEqual(job1.id, job2.id)
+
+        pdfa1 = self._make_real_pdf(f"{job1.id}_pdfa.pdf", marker_text="first document")
+        pdfa2 = self._make_real_pdf(f"{job2.id}_pdfa.pdf", marker_text="second document")
+
+        path1 = deliver_output(pdfa1, Path(self.output_dir), job1)
+        path2 = deliver_output(pdfa2, Path(self.output_dir), job2)
+
+        self.assertNotEqual(path1, path2)
+        self.assertTrue(path1.exists())
+        self.assertTrue(path2.exists())
+        with pikepdf.open(path1) as pdf:
+            self.assertEqual(str(pdf.docinfo["/Title"]), "first document")
+        with pikepdf.open(path2) as pdf:
+            self.assertEqual(str(pdf.docinfo["/Title"]), "second document")
+
+    def test_atomic_move_falls_back_correctly_on_cross_device_error(self):
+        from pipeline import output as output_module
+
+        src = Path(self.output_dir) / "src.pdf"
+        src.write_bytes(b"cross device content")
+        dest = Path(self.failed_dir) / "dest.pdf"
+
+        real_rename = Path.rename
+        call_count = {"n": 0}
+
+        def flaky_rename(self_path, target):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise OSError(errno.EXDEV, "cross-device link")
+            return real_rename(self_path, target)
+
+        with mock.patch.object(Path, "rename", flaky_rename):
+            output_module._atomic_move(src, dest)
+
+        self.assertTrue(dest.exists())
+        self.assertEqual(dest.read_bytes(), b"cross device content")
+        self.assertFalse(src.exists())

@@ -23,13 +23,19 @@ def run_pipeline(job_id: int) -> None:
     Updates the Job's status/output_path/error_message as it progresses,
     and emails the user on completion for async (queued) runs.
 
+    NOTE: pipeline/ingest.py (stage 1) is still a NotImplementedError
+    stub -- this function cannot actually complete a real run yet, even
+    though every stage from cleanup.py onward is implemented. Don't
+    assume this works end to end just because it reads that way below;
+    check ingest.py's own status first (see AGENTS.md "Current state").
+
     TODO:
       - Load the Job, set status=PROCESSING.
       - Wire the stage functions below together, handling failures at
         any stage (see PROJECT_SPEC.md "Open Questions" re: retry /
-        quarantine / notify behavior).
-      - On veraPDF validation failure, call output.deliver_failed()
-        instead of output.deliver_output().
+        quarantine / notify behavior) -- currently an exception from any
+        stage propagates uncaught; nothing routes it to
+        output.deliver_failed().
       - send_mail() to settings.NOTIFY_EMAIL when the job completes.
     """
     from ingest.models import Job
@@ -60,8 +66,8 @@ def run_pipeline(job_id: int) -> None:
 
     validation_result = validate.validate_pdfa(pdfa_path, job_id)
     if validation_result.compliant:
-        output.deliver_output(pdfa_path, Path(settings.SCAN_OUTPUT_DIR))
+        output.deliver_output(pdfa_path, Path(settings.SCAN_OUTPUT_DIR), job)
     else:
         output.deliver_failed(
-            pdfa_path, Path(settings.SCAN_FAILED_DIR), reason=validation_result.summary
+            pdfa_path, Path(settings.SCAN_FAILED_DIR), job, reason=validation_result.summary
         )

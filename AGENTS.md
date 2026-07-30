@@ -50,14 +50,14 @@ once a validated PDF/A lands in the output folder.
 
 ```
 pipeline/
-  ingest.py      - watcher/upload hands off a raw scan here
+  ingest.py      - watcher/upload hands off a raw scan here (STUB -- see "Current state")
   cleanup.py     - custom blank-page detection (rasterize + ink coverage)
   orient.py      - ocrmypdf --deskew --rotate-pages, BEFORE any text layer exists
   ocr.py         - calls Google Document AI (sync, <=15 pages), returns OcrResult
   reassemble.py  - invisible text overlay onto oriented_path's own pages (no split step)
   pdfa.py        - ocrmypdf: --output-type pdfa, --skip-text, --optimize (no rotate/deskew here)
   validate.py    - real verapdf CLI check, returns ValidationResult (compliant/parse_failure/summary)
-  output.py      - writes to the folder Paperless-NGX watches
+  output.py      - moves to SCAN_OUTPUT_DIR/SCAN_FAILED_DIR, marks Job DONE/FAILED, cleans up intermediates
   run.py         - orchestrates the above, in this order
 ```
 
@@ -180,15 +180,21 @@ own docstring for details.
 
 ## Current state (check before assuming something works)
 
-Most `pipeline/*.py` stage functions still raise `NotImplementedError` —
-stubs tied to the spec, not working code. Don't assume a stage works
-because the file exists and has the right signature; check for
-`NotImplementedError` or a TODO before building on top of it.
+**`pipeline/ingest.py` (stage 1) is the one remaining `NotImplementedError`
+stub — and it's the *first* stage `run_pipeline()` calls.** Every other
+stage (`cleanup.py` through `output.py`, 7 of 8) is now implemented and
+tested, but `run_pipeline()` still cannot complete a real run: it raises
+immediately on `ingest.ingest(input_path)`, before touching any of the
+working stages after it. Don't describe this as "the pipeline works end
+to end" — it doesn't, yet, on account of the one stage nobody's built.
+Implementing `ingest.py` and then actually running the full chain against
+a real scan are both still ahead, and are a different piece of work from
+what's covered below.
 
 `pipeline/cleanup.py`, `pipeline/orient.py`, `pipeline/ocr.py`,
-`pipeline/reassemble.py`, `pipeline/pdfa.py`, and `pipeline/validate.py`
-are the exceptions: all six are implemented and tested
-(`pipeline/tests.py`). `pipeline/split.py` no longer exists — see below.
+`pipeline/reassemble.py`, `pipeline/pdfa.py`, `pipeline/validate.py`, and
+`pipeline/output.py` are implemented and tested (`pipeline/tests.py`).
+`pipeline/split.py` no longer exists — see below.
 
 - `cleanup.py` rasterizes each page via `pdf2image`, measures ink
   coverage, drops confidently-blank pages, and logs borderline ones as
@@ -264,6 +270,28 @@ are the exceptions: all six are implemented and tested
   three outcomes (compliant / non-compliant / unparseable) were verified
   against real files before writing this, not assumed from veraPDF's
   docs.
+- `output.py` moves the validated PDF/A into `SCAN_OUTPUT_DIR` (success)
+  or `SCAN_FAILED_DIR` (failure — kept, not deleted, for manual review)
+  under a job-scoped filename (`{job.id}_{job.original_filename}`,
+  matching the `{job_id}_` prefix the pipeline's own intermediate files
+  already use), so two jobs can never collide on filename even if their
+  originals match. The move is atomic where possible (`Path.rename()`,
+  same filesystem — true by default here, since `SCAN_OUTPUT_DIR`/
+  `SCAN_FAILED_DIR` are both under the same docker-compose volume) and
+  falls back to a same-filesystem-as-destination copy+rename, never a
+  plain copy-then-delete, if it ever isn't (a genuine `EXDEV` cross-
+  device error). Also deletes this job's intermediate files
+  (`{job_id}_cleaned.pdf` / `_oriented.pdf` / `_reassembled.pdf`) from
+  `SCAN_OUTPUT_DIR` — nothing upstream cleans up after itself, so
+  without this every job would leave a trail of working files sitting in
+  the folder Paperless-NGX watches. Takes the `Job` instance directly
+  (not just `job_id`, unlike other stages) since it's the one stage that
+  updates the row itself: `status` (`Job.Status.DONE`/`FAILED`,
+  `ingest/models.py`'s existing choices, nothing new invented),
+  `output_path`, and — for failures — `error_message` (the existing
+  field, used for veraPDF's failure summary rather than a new sidecar
+  file, since it already exists for exactly this and is visible in
+  Django admin).
 
 `pipeline/split.py` was removed (see `PROJECT_SPEC.md` pipeline stage
 list) — it rasterized pages for the *old* per-page-image OCR design.
