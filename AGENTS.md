@@ -172,3 +172,19 @@ stage function whose contract changed once actually implemented.
   pass/fail) — this is a small self-hosted tool with no dashboard beyond
   Django admin, the job list view, and logs, so logs are the primary way
   of finding out what happened to a given scan.
+
+## Versioning & releases
+
+- **Tag and update `CHANGELOG.md` together, at the end of each meaningful
+  chunk of work — not as a follow-up requested later.** This slipped
+  once already: the 0.4.1 (Stirling PDF removal) and 0.5.0 (blank-page
+  detection) changelog entries and tags were both added after the fact,
+  in a separate session, because tagging wasn't done when the work
+  actually landed. Reconciling it after the fact means the tag can end
+  up pointing at a different commit than the one that added the
+  changelog text for it (check `git log` for the actual commit that
+  finalized a given entry — don't assume it's the most recent one), and
+  is just an easy step to forget once it's decoupled from the work
+  itself.
+- Use annotated tags (`git tag -a vX.Y.Z <commit> -m "vX.Y.Z - <summary>"`),
+  matching the existing tags (`git tag -n99` to see the convention).
