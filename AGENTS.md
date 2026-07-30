@@ -74,6 +74,28 @@ python manage.py test
 ./scripts/test-all.sh --smoke
 ```
 
+## Local development
+
+- **Use Python 3.12 locally, matching the Dockerfile (`python:3.12-slim`).**
+  `requirements.txt` pins `Django>=5.0,<6.0` without an upper patch bound,
+  so a venv built with an older interpreter can silently resolve to an
+  older Django major version (e.g. 4.2 on Python 3.9) with no error until
+  something actually breaks. The container is the source of truth for what
+  actually ships; local dev should match it, not the other way around.
+- Rebuild the venv against 3.12 if you're not sure what it's running:
+  ```
+  brew install python@3.12   # if not already installed
+  /opt/homebrew/bin/python3.12 -m venv .venv
+  source .venv/bin/activate
+  pip install -r requirements.txt
+  python -c "import django; print(django.VERSION)"   # expect (5, x, x, ...)
+  ```
+- See `verification-logs/` for dated records of local-vs-container
+  verification runs (`manage.py check` / `makemigrations --check --dry-run`
+  / `test`), so drift like this can be diffed against a real prior run
+  instead of relying on conversation history that doesn't persist between
+  sessions.
+
 ## Current state (check before assuming something works)
 
 As of the initial scaffold, `pipeline/*.py` stage functions raise
