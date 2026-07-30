@@ -7,6 +7,40 @@ Versioning is semantic-ish and appropriate to a pre-1.0, single-developer
 scaffold — a MINOR bump per meaningful milestone, PATCH reserved for fixes
 within one.
 
+## [0.5.0] - 2026-07-30
+
+First real pipeline stage: `pipeline/cleanup.py` is implemented and
+tested, no longer a stub.
+
+### Added
+- `pipeline/cleanup.py` — custom blank-page detection. Rasterizes each
+  page via `pdf2image`, measures the percentage of non-white ("ink")
+  pixels, and applies the existing two-tier threshold
+  (`BLANK_PAGE_DROP_THRESHOLD_PCT` / `BLANK_PAGE_REVIEW_THRESHOLD_PCT`):
+  confidently-blank pages are dropped losslessly via `pikepdf`;
+  borderline pages are kept and logged as `ingest.models.BorderlinePage`
+  for manual review, using its existing fields unchanged. Measurement
+  rasterizes at 100 DPI rather than the pipeline's 400 DPI archival
+  resolution — coverage is a ratio, stable across render resolution, so
+  this is a documented speed optimization with no accuracy trade-off.
+- `pipeline/tests.py` — first tests for this stage: confidently-blank
+  page dropped, non-blank page kept untouched, borderline page kept and
+  logged with the correct job/page/coverage, and page order preserved
+  across a drop in a multi-page document. Uses synthetic PDFs generated
+  at the same DPI `cleanup()` measures at, so results are exact rather
+  than fuzzed by resampling.
+
+### Changed
+- `cleanup()` now returns a `CleanupResult` (cleaned PDF path plus
+  `pages_total`/`_dropped`/`_borderline`) instead of a bare `Path`, so
+  `run_pipeline` can log what happened at this stage. `pipeline/run.py`'s
+  one call site updated to match — the only stage function whose
+  contract changed as a result of actually being implemented.
+- Cleaned up the remaining loose threads from the Stirling PDF removal
+  (0.4.1): `cleanup.py`'s docstring/comments no longer describe calling
+  its API, the unused `STIRLING_PDF_URL` setting and its `.env.example`
+  block are gone, and `scripts/test-all.sh`'s stale mention is fixed.
+
 ## [0.4.1] - 2026-07-30
 
 Architecture/spec correction, no pipeline code changed — `pipeline/cleanup.py`
