@@ -13,6 +13,48 @@ back out.
 
 See below for the full project spec, architecture, and setup details.
 
+## Status
+
+This repo is an early-stage scaffold. Here's what's actually wired up
+versus what's still a stub, checked against the current code (not the
+original plan):
+
+**Implemented and working:**
+- Custom Django user model (`accounts.User`) with multi-user accounts.
+- Enforced TOTP 2FA (`django-otp` + `django-two-factor-auth`, backup codes
+  via `otp_static`) — verified end-to-end: unauthenticated requests are
+  redirected to login, authenticated users without a 2FA device are
+  redirected to setup on every page including Django admin, and the setup
+  page itself stays reachable.
+- Per-user job visibility (`ingest.views._jobs_visible_to`) — normal users
+  only see/open their own jobs; staff/admin see everything. Verified with
+  a real Django test client. Uploading a file correctly records
+  `uploaded_by` and enqueues a Django-RQ job.
+- docker-compose scaffold (web, worker, redis, samba, watcher,
+  stirling-pdf) and a Dockerfile that builds.
+- Stirling PDF and Google Document AI are wired as *integration points*
+  (`STIRLING_PDF_URL`, `GCP_DOCAI_*` settings, the stirling-pdf
+  docker-compose service) — not yet called by any code.
+
+**Still a stub / not working yet:**
+- **Every `pipeline/*.py` stage function raises `NotImplementedError`**
+  (`ingest.py`, `cleanup.py`, `split.py`, `ocr.py`, `reassemble.py`,
+  `pdfa.py`, `validate.py`, `output.py`). `pipeline/run.py` orchestrates
+  them in order, but running it fails at the first stage — a job enqueued
+  via the web upload form will fail in the RQ worker for this reason.
+- **The web upload view doesn't actually save the uploaded file** —
+  `ingest/views.py` computes the destination path but the write itself is
+  a `# TODO`. The `Job` row is still created and enqueued regardless.
+- **`watcher/watch.py` doesn't create `Job` rows at all yet** — it detects
+  new files in the Samba input folder and only `print()`s. The
+  Samba-drop-to-pipeline path described below isn't connected yet.
+- No synchronous-vs-async cutover logic (`SYNCHRONOUS_BATCH_SIZE_LIMIT` is
+  a setting; nothing reads it yet).
+- No completion emails (SMTP settings exist; nothing calls `send_mail()`).
+
+The spec and architecture below describe the target design — check the
+list above before assuming something works because it's described there.
+
 ## Working in this repo
 
 If you're an AI coding agent (or a human who wants the same context),
@@ -160,9 +202,18 @@ which must already exist (create it with `manage.py createsuperuser`).
 ## Getting Started
 
 1. Copy `.env.example` to `.env` and fill in your values (GCP credentials,
-   processor IDs, SMTP settings, folder paths).
+   processor IDs, SMTP settings, folder paths, `DEFAULT_JOB_OWNER_USERNAME`).
 2. Drop your GCP service account key JSON where `.env` points
    `GOOGLE_APPLICATION_CREDENTIALS` to.
 3. Run `./setup.sh` to build and start the stack.
-4. Visit the web UI to upload a document, or drop a PDF into the Samba
-   input share.
+4. Create yourself an account: `docker compose exec web python manage.py
+   createsuperuser` (or `python manage.py createsuperuser` if running
+   outside Docker).
+5. Log in at the web UI with that account. **On first login you're
+   redirected straight to 2FA setup** — scan the QR code with an
+   authenticator app (Google Authenticator, Authy, etc.) and save the
+   generated backup codes. This is required before you can reach uploads
+   or job status; a password alone isn't enough (see "Authentication &
+   Access Control" below).
+6. Visit the web UI to upload a document, or drop a PDF into the Samba
+   input share (the watcher doesn't create jobs yet — see "Status" above).
