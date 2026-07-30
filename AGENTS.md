@@ -209,8 +209,14 @@ why).
 against a real scan** — uploaded through the web UI, real Document AI
 call, real ocrmypdf orient/pdfa passes, real veraPDF validation
 (compliant), delivered to `SCAN_OUTPUT_DIR` with the `Job` marked `done`
-and no leftover intermediate files. That's one confirmed run, not broad
-coverage: the Samba-drop (watcher) path hasn't been exercised this way,
+and no leftover intermediate files. **Caveat added later, important:**
+concrete evidence (see the `worker`/`watcher` crash-loop entry further
+below) shows this almost certainly did not go through the actual
+`django_rq` queue + `worker` path — treat this as "the pipeline stages
+themselves work against a real scan," not "the queued/async path was
+proven," which is a separate, until-recently-unproven claim. That's one
+confirmed run, not broad coverage: the Samba-drop (watcher) path hasn't
+been exercised this way,
 neither has a multi-page or rotated document, and `run_pipeline()` still
 has no failure handling between stages (an exception from any stage
 before `validate.py` propagates uncaught rather than routing to
@@ -351,19 +357,56 @@ separate process using the `worker` container's image/environment with
 no restart, which is the core claim the whole DB-backed design rests
 on.
 
-**Known bug, discovered incidentally while verifying the above, not
-caused by or fixed as part of it: the `worker` service currently
-crash-loops** (`ModuleNotFoundError: No module named 'config'`).
-`docker-compose.yml` runs it as `python worker/entrypoint.py`, which
-puts `worker/`, not `/app`, on `sys.path[0]` — so `config.settings`
-isn't importable. `web`'s `python manage.py ...` and
-`gunicorn config.wsgi:application` don't have this problem since both
-run from `/app` directly. Confirmed pre-existing (untouched by the
-gcpconfig work — `git log` shows no recent changes to
-`worker/entrypoint.py`, `Dockerfile`, or `docker-compose.yml`) and not
-yet fixed. Likely fix: `cd /app && python -m worker.entrypoint`, or add
-`worker/__init__.py` + adjust the command, but pick this up as its own
-task rather than folding it into an unrelated change.
+**`worker` (and `watcher`) used to crash-loop on every boot — fixed,
+and the blast radius turned out to be worse than first thought.** Both
+are invoked as bare scripts one directory below `/app`
+(`python worker/entrypoint.py`, `python watcher/watch.py`), which puts
+that subdirectory, not `/app`, on `sys.path[0]` — breaking
+`import config` the moment `django.setup()` runs
+(`ModuleNotFoundError: No module named 'config'`). `web` never had this
+problem (`gunicorn`/`manage.py` both resolve `/app` correctly on their
+own), which is why it went unnoticed. **Fix:** `Dockerfile` now sets
+`ENV PYTHONPATH=/app` — one line, fixes every script-style entrypoint
+project-wide rather than converting each to `-m` module invocation
+individually. `git log` confirms this bug existed unchanged since the
+initial scaffold commit — `worker/entrypoint.py`'s content and
+`docker-compose.yml`'s `worker`/`watcher` commands were never touched
+between then and the fix.
+
+**Consequence, confirmed directly, not inferred:** the "`worker`
+never once successfully booted via its real command" fact means the
+"`run_pipeline()` has been run once, successfully, end to end" claim
+elsewhere in this doc and in `README.md` almost certainly did **not**
+happen via the real queued path (upload → `django_rq.enqueue()` →
+`worker`'s `rqworker` process). Direct evidence: the first time
+`worker` ever booted successfully (right after the `PYTHONPATH` fix),
+it immediately dequeued and failed on **two stale jobs already sitting
+in Redis** (`enqueued_at` ~4 hours earlier, same day) — they'd been
+queued and simply never picked up until that moment, because nothing
+had ever successfully listened on that queue before. Both failed
+because the `Job` rows they referenced (`id=1`, `id=2`) no longer
+existed — collateral from an unrelated `db.sqlite3` reset in a later
+session — not a pipeline bug. Whatever validated the original "real
+run" claim, it did not go through this path; most likely a direct
+Django-shell call to `run_pipeline()`, or similar, though the exact
+mechanism isn't recorded anywhere (checked `verification-logs/` and
+git history — no record of it). Treat that original claim as "the
+pipeline stages themselves ran successfully against a real scan," not
+"the async queue+worker path was proven" — those are different claims
+and only the first one has real evidence behind it.
+
+**Now genuinely verified, via the real entrypoint, not a workaround:**
+rebuilt (`docker compose build`), brought up `web`+`worker`+`watcher`
+together, confirmed all three stay `Up` (not restarting) for several
+minutes. Enqueued a fresh job the same way `ingest.views.upload()`
+does; `worker` dequeued it within seconds and executed real pipeline
+code (correctly failed at `ingest.py` on a deliberately-invalid file —
+no real Document AI call made, so this didn't cost anything). This is
+the queue mechanism itself proven end to end for the first time. A
+full real run all the way through a real Document AI call, via this
+now-fixed path, hasn't been done yet — that's a reasonable next step
+but wasn't done here since it costs real money and wasn't explicitly
+asked for.
 
 ## Auth & job visibility
 

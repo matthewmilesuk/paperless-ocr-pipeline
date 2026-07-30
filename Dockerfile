@@ -36,6 +36,18 @@ RUN wget -q -O /tmp/verapdf-installer.zip \
 
 WORKDIR /app
 
+# web (gunicorn/manage.py) and worker/watcher (`python worker/entrypoint.py`,
+# `python watcher/watch.py`) all need `config`/`pipeline`/etc. importable.
+# gunicorn and manage.py already add /app to sys.path themselves (gunicorn
+# inserts the CWD when loading the WSGI app; `python manage.py` adds
+# manage.py's own directory), but worker/watcher are invoked as bare
+# scripts one level down (`python worker/entrypoint.py`), which puts
+# worker/'s own directory on sys.path[0] instead of /app -- breaking
+# `import config` the moment django.setup() runs. Explicit PYTHONPATH
+# fixes this project-wide in one place rather than converting every
+# script-style entrypoint to `-m` module invocation individually.
+ENV PYTHONPATH=/app
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

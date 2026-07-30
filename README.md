@@ -51,7 +51,16 @@ original plan):
   through the web UI** — real Document AI call, real ocrmypdf
   orient/pdfa passes, real veraPDF validation (compliant), delivered to
   `SCAN_OUTPUT_DIR` with the `Job` marked `done` and no leftover
-  intermediate files. That's one confirmed real run, not a guarantee:
+  intermediate files. **Caveat:** this almost certainly didn't go
+  through the actual `django_rq` queue + `worker` path — `worker`
+  (and `watcher`) silently crash-looped on every boot until just now
+  (see `AGENTS.md` "Current state" for the fix and the direct evidence:
+  two jobs left sitting unprocessed in Redis for hours, only picked up
+  the moment `worker` first booted successfully). Read this bullet as
+  "the pipeline stages work against a real scan," not "the queued path
+  was proven" — the latter is now separately verified, for the queue
+  mechanism itself, but not yet with a full real OCR call through it.
+  That's one confirmed real run, not a guarantee:
   there's still no failure handling between stages (see below), and it
   hasn't been exercised against edge cases like a multi-page or rotated
   document, or one that actually fails PDF/A validation. Don't read "one

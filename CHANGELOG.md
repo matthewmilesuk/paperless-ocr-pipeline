@@ -7,6 +7,58 @@ Versioning is semantic-ish and appropriate to a pre-1.0, single-developer
 scaffold — a MINOR bump per meaningful milestone, PATCH reserved for fixes
 within one.
 
+## [0.11.1] - 2026-07-30
+
+`worker`/`watcher` crash-loop fix, plus what it reveals about the
+earlier "real end-to-end run" claim.
+
+### Fixed
+- `Dockerfile`: added `ENV PYTHONPATH=/app`. `worker` and `watcher` are
+  invoked as bare scripts one directory below `/app`
+  (`python worker/entrypoint.py`, `python watcher/watch.py`), which puts
+  that subdirectory, not `/app`, on `sys.path[0]` — breaking
+  `import config` the instant `django.setup()` runs
+  (`ModuleNotFoundError: No module named 'config'`). `web` never hit
+  this (`gunicorn`/`manage.py` both resolve `/app` on their own), which
+  is why it went unnoticed. One `PYTHONPATH` line fixes every
+  script-style entrypoint project-wide, rather than converting each to
+  `-m` module invocation individually. Confirmed via `git log`: this bug
+  existed unchanged since the initial scaffold commit.
+
+### Notes
+Investigated the blast radius before moving on, per an explicit ask:
+this means `worker` (where 100% of real pipeline execution happens, per
+the process-boundary design in "GCP / Document AI Configuration") had
+never once successfully booted via its real command before this fix.
+Direct, concrete evidence, not inference: the very first time `worker`
+booted successfully, it immediately dequeued and failed on two jobs
+that had been sitting in Redis, untouched, for about 4 hours — queued
+by some earlier session, never picked up, because nothing had ever
+successfully listened on that queue before. Both failed only because
+the `Job` DB rows they referenced no longer existed (an unrelated
+`db.sqlite3` reset in between), not from a pipeline bug.
+
+Consequence: the "`run_pipeline()` has been run once, successfully, end
+to end" claim in `AGENTS.md`/`README.md` almost certainly did not go
+through the real queue+worker path — no record exists (checked
+`verification-logs/` and git history) of how it actually ran; most
+likely a direct call bypassing the queue. Re-read that claim as "the
+pipeline stages themselves work against a real scan," not "the
+queued/async path was proven" — both docs now say this explicitly.
+
+Rebuilt and brought up `web`+`worker`+`watcher` together; confirmed all
+three stay `Up`, not restarting, for several minutes. Then proved the
+queue mechanism for real, via the fixed entrypoint, not a workaround:
+enqueued a job the same way `ingest.views.upload()` does, and `worker`
+dequeued and executed it within seconds (failed at `ingest.py` on a
+deliberately-invalid file, so no real Document AI call/cost was
+involved). Full suite (61 tests) still passes locally and in Docker.
+
+A full real run through a real Document AI call, via this now-working
+queued path specifically, hasn't been done — flagged as a reasonable
+next step, not done here since it costs real money and wasn't
+explicitly requested.
+
 ## [0.11.0] - 2026-07-30
 
 New `gcpconfig` app: an admin-only setup wizard for GCP/Document AI
