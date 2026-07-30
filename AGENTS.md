@@ -36,22 +36,26 @@ once a validated PDF/A lands in the output folder.
 - **One PDF in, one PDF out.** Page order must be preserved (minus
   confidently-dropped blanks). No stage should produce multiple output
   files for a single input scan.
-- **Stirling PDF handles cleanup (deskew, blank-page removal); Google
-  Document AI handles OCR.** Don't reimplement either of these with custom
-  logic — call the existing tools. If Stirling PDF's API can't do
-  something we need, say so rather than quietly hand-rolling a
-  replacement.
+- **Google Document AI handles OCR; `ocrmypdf` handles deskew/auto-rotate
+  and PDF/A conversion.** Don't reimplement either of these with custom
+  logic — call the existing tools.
+- **Blank-page detection in `cleanup.py` is custom code, on purpose.**
+  Stirling PDF was evaluated for this and removed before implementation —
+  its remove-blanks endpoint is binary (delete or don't), with no way to
+  express the confidently-blank/borderline two-tier behavior required
+  here. See `PROJECT_SPEC.md` "Decisions Changed" for the full reasoning.
+  Don't reach for an external tool here without checking that note first.
 
 ## Architecture at a glance
 
 ```
 pipeline/
   ingest.py      - watcher/upload hands off a raw scan here
-  cleanup.py     - calls Stirling PDF API: deskew, blank-page removal
+  cleanup.py     - custom blank-page detection (rasterize + ink coverage)
   split.py       - splits into per-page images (in-memory/temp only)
   ocr.py         - calls Google Document AI, returns hOCR per page
   reassemble.py  - rebuilds one PDF, original order, invisible text overlay
-  pdfa.py        - ocrmypdf: --output-type pdfa, --optimize
+  pdfa.py        - ocrmypdf: --output-type pdfa, --rotate-pages, --deskew, --optimize
   validate.py    - veraPDF check; failure -> failed/ folder, not output/
   output.py      - writes to the folder Paperless-NGX watches
   run.py         - orchestrates the above, in this order

@@ -7,6 +7,33 @@ Versioning is semantic-ish and appropriate to a pre-1.0, single-developer
 scaffold — a MINOR bump per meaningful milestone, PATCH reserved for fixes
 within one.
 
+## [0.4.1] - 2026-07-30
+
+Architecture/spec correction, no pipeline code changed — `pipeline/cleanup.py`
+is still a stub (see 0.1.0 below); this only updates the docs/infra ahead
+of implementing it.
+
+### Changed
+- **Removed Stirling PDF from the pipeline architecture**, before any of
+  its integration was implemented. A closer look at its actual API showed
+  it doesn't cover what this project needs:
+  - Its rotation endpoint only supports fixed 90-degree increments, not
+    auto skew/orientation detection. `ocrmypdf`'s own `--deskew` and
+    `--rotate-pages` flags do this properly and were always going to run
+    at the PDF/A conversion stage anyway — that work simply moves there
+    instead of being lost.
+  - Its remove-blanks endpoint is binary (delete or don't), with no way
+    to express the confidently-blank/borderline two-tier requirement, and
+    no per-page report of what it removed. Blank-page detection will now
+    be custom code in `cleanup.py` (not yet implemented — this entry
+    covers the spec/infra correction only, ahead of that work).
+  - Updated `PROJECT_SPEC.md` (new "Decisions Changed" section explaining
+    the reasoning above), `README.md`, and `AGENTS.md` to match. Removed
+    the `stirling-pdf` service, its `depends_on` references, and the
+    `stirling-data` volume from `docker-compose.yml`. No dependency
+    changes needed — nothing in `requirements.in` had been added
+    specifically for Stirling.
+
 ## [0.4.0] - 2026-07-30
 
 First version where an uploaded or watched scan actually results in a

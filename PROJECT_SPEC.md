@@ -46,10 +46,12 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
    pipeline function is also triggered by the web UI upload, so there's one
    code path regardless of entry point.
 
-2. **Cleanup pass (Stirling PDF API)**
-   - Deskew / auto-rotate
-   - Blank page removal
-   - Confidently-blank pages (≈ under 0.5% ink coverage) are dropped
+2. **Cleanup pass (custom blank-page detection)**
+   - Blank page removal only — deskew/auto-rotate now happens at the
+     PDF/A conversion stage (stage 6), via `ocrmypdf` flags. See
+     "Decisions Changed" below for why this moved.
+   - Each page is rasterized and measured for ink/pixel coverage.
+     Confidently-blank pages (≈ under 0.5% ink coverage) are dropped
      automatically. Borderline pages (≈ 0.5–3%) are **kept in the final
      document by default** (never silently dropped) but logged for manual
      review, since a false-positive blank-page drop is unrecoverable once
@@ -69,10 +71,11 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
    page image (so the file looks like the scan but is fully searchable/
    copyable).
 
-6. **PDF/A conversion** — via `ocrmypdf` (either called directly, or through
-   the Stirling PDF API which wraps the same tool):
+6. **PDF/A conversion** — via `ocrmypdf`, called directly:
    - `--output-type pdfa`
-   - `--rotate-pages` / `--deskew` as a safety net
+   - `--rotate-pages` / `--deskew` — this is where auto-rotation and
+     deskew actually happen (moved here from the cleanup pass; see
+     "Decisions Changed" below)
    - `--optimize 3` for file size reduction (JBIG2 for bitonal content,
      smarter JPEG handling for color) — this is where file size gets
      controlled, NOT by downscaling the source scan. The 400 DPI color
@@ -103,7 +106,6 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
 | `redis`   | Queue backend for `worker`                                        |
 | `samba`   | Samba share for scan-to-folder input + watched output folder (`dperson/samba` image) |
 | `watcher` | `watchdog`-based process monitoring the Samba input folder, triggers pipeline |
-| `stirling-pdf` | Cleanup pass (deskew, blank-page removal) + PDF/A conversion via its API |
 
 Everything reproducible via `docker-compose.yml` + a `.env.example` +
 a setup script. Should be shareable with other Paperless-NGX users, not
@@ -116,10 +118,36 @@ just usable on this one machine.
   "Authentication & Access Control". This is separate from the
   local-network-only deployment assumption above, which still holds.
 - No Celery — Django-RQ is simpler for this scale.
-- No custom-built blank-page detection or rotation logic — Stirling PDF
-  already solves this well; don't reinvent it.
+- ~~No custom-built blank-page detection or rotation logic — Stirling PDF
+  already solves this well; don't reinvent it.~~ **Superseded:** see
+  "Decisions Changed" below — Stirling PDF has been removed, and
+  blank-page detection is now custom-built after all.
 - No downscaling of source scans to control file size — let `ocrmypdf`
   optimization handle that after OCR, not before.
+
+## Decisions Changed
+
+- **Stirling PDF removed from the pipeline** (was: cleanup pass — deskew/
+  auto-rotate + blank-page removal — and available as an alternate PDF/A
+  conversion path). A closer look at its actual API showed it doesn't
+  cover what this project needs:
+  - Its rotation endpoint only supports fixed 90-degree increments, not
+    auto skew/orientation detection. `ocrmypdf`'s own `--deskew` and
+    `--rotate-pages` flags do this properly and were always going to run
+    at the PDF/A conversion stage anyway (stage 6) — nothing is lost by
+    dropping Stirling for this; that work just moves to `pdfa.py`.
+  - Its remove-blanks endpoint is binary (delete or don't), with no way
+    to express the "confidently blank → auto-drop, borderline → keep and
+    log" requirement (stage 2), and no per-page report of what it
+    removed. Blank-page detection now needs custom code — rasterize each
+    page, measure ink/pixel coverage, apply the two-tier threshold — to
+    support that safely.
+  - Net effect: `cleanup.py` becomes custom blank-page detection only;
+    deskew/auto-rotate moved to `pdfa.py` as `ocrmypdf` flags; the
+    `stirling-pdf` docker-compose service and its `STIRLING_PDF_URL`
+    integration point are gone. The custom blank-page detection logic
+    itself is not yet implemented — this change updates the spec/infra
+    ahead of that work.
 
 ## Open Questions / To Be Decided
 

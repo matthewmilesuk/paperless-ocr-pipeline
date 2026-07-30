@@ -36,11 +36,10 @@ original plan):
   folder, owned by `DEFAULT_JOB_OWNER_USERNAME` (fails loudly and skips
   the file if that account is missing or unset, rather than silently
   leaving a job unattributed). Covered by tests in `ingest/tests.py`.
-- docker-compose scaffold (web, worker, redis, samba, watcher,
-  stirling-pdf) and a Dockerfile that builds.
-- Stirling PDF and Google Document AI are wired as *integration points*
-  (`STIRLING_PDF_URL`, `GCP_DOCAI_*` settings, the stirling-pdf
-  docker-compose service) — not yet called by any code.
+- docker-compose scaffold (web, worker, redis, samba, watcher) and a
+  Dockerfile that builds.
+- Google Document AI is wired as an *integration point* (`GCP_DOCAI_*`
+  settings) — not yet called by any code.
 
 **Still a stub / not working yet:**
 - **Every `pipeline/*.py` stage function raises `NotImplementedError`**
@@ -113,10 +112,13 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
    pipeline function is also triggered by the web UI upload, so there's one
    code path regardless of entry point.
 
-2. **Cleanup pass (Stirling PDF API)**
-   - Deskew / auto-rotate
-   - Blank page removal
-   - Confidently-blank pages (≈ under 0.5% ink coverage) are dropped
+2. **Cleanup pass (custom blank-page detection)**
+   - Blank page removal only — deskew/auto-rotate happens at the PDF/A
+     conversion stage instead (see step 6). See `PROJECT_SPEC.md`
+     "Decisions Changed" for why: Stirling PDF was evaluated and dropped
+     from this pipeline before implementation.
+   - Each page is rasterized and measured for ink/pixel coverage.
+     Confidently-blank pages (≈ under 0.5% ink coverage) are dropped
      automatically. Borderline pages (≈ 0.5–3%) are **kept in the final
      document by default** (never silently dropped) but logged for manual
      review, since a false-positive blank-page drop is unrecoverable once
@@ -136,10 +138,9 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
    page image (so the file looks like the scan but is fully searchable/
    copyable).
 
-6. **PDF/A conversion** — via `ocrmypdf` (either called directly, or through
-   the Stirling PDF API which wraps the same tool):
+6. **PDF/A conversion** — via `ocrmypdf`, called directly:
    - `--output-type pdfa`
-   - `--rotate-pages` / `--deskew` as a safety net
+   - `--rotate-pages` / `--deskew` — auto-rotation and deskew happen here
    - `--optimize 3` for file size reduction (JBIG2 for bitonal content,
      smarter JPEG handling for color) — this is where file size gets
      controlled, NOT by downscaling the source scan. The 400 DPI color
@@ -170,7 +171,6 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
 | `redis`   | Queue backend for `worker`                                        |
 | `samba`   | Samba share for scan-to-folder input + watched output folder (`dperson/samba` image) |
 | `watcher` | `watchdog`-based process monitoring the Samba input folder, triggers pipeline |
-| `stirling-pdf` | Cleanup pass (deskew, blank-page removal) + PDF/A conversion via its API |
 
 Everything reproducible via `docker-compose.yml` + a `.env.example` +
 a setup script. Should be shareable with other Paperless-NGX users, not
@@ -184,8 +184,10 @@ just usable on this one machine.
   deployment assumption in "Purpose" above, which still holds.) The
   Samba/watcher/worker side has no auth concept and is unaffected.
 - No Celery — Django-RQ is simpler for this scale.
-- No custom-built blank-page detection or rotation logic — Stirling PDF
-  already solves this well; don't reinvent it.
+- ~~No custom-built blank-page detection or rotation logic — Stirling PDF
+  already solves this well; don't reinvent it.~~ **Superseded:** Stirling
+  PDF has been removed from the pipeline; blank-page detection is now
+  custom-built. See `PROJECT_SPEC.md` "Decisions Changed" for why.
 - No downscaling of source scans to control file size — let `ocrmypdf`
   optimization handle that after OCR, not before.
 
