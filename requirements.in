@@ -10,6 +10,10 @@
 # Never hand-edit requirements.txt or `pip install` a newer version without
 # updating this file first -- see AGENTS.md "Local development".
 
+# Loads .env / .env.local into os.environ -- see config/settings.py and
+# AGENTS.md "Local development".
+python-dotenv==1.2.2
+
 # Web app / job queue
 Django==5.2.16
 django-rq==4.1.1

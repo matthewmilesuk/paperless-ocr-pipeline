@@ -7,7 +7,29 @@ full architecture and rationale.
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# .env holds the Docker-appropriate values (docker-compose's env_file
+# already injects these directly into the container's environment before
+# Python starts, so this load is a no-op there -- it only fills gaps when
+# running outside Docker, e.g. the local venv). load_dotenv() never
+# overrides a variable that's already set in os.environ.
+load_dotenv(BASE_DIR / ".env")
+
+# .env.local overrides individual keys that differ when running outside
+# Docker (see AGENTS.md "Local development" -- currently just
+# GOOGLE_APPLICATION_CREDENTIALS, which needs a real host path locally vs.
+# the in-container /run/secrets/... path .env has). Guarded to skip inside
+# a container: docker-compose.yml bind-mounts the whole project directory
+# (`.:/app`), so .env.local is visible to the container too if it exists
+# on the host -- without this guard its override=True would clobber the
+# correct Docker value with a host path that doesn't exist in the
+# container. /.dockerenv is created by the Docker runtime itself, not by
+# anything in this repo.
+if not Path("/.dockerenv").exists():
+    load_dotenv(BASE_DIR / ".env.local", override=True)
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "insecure-dev-key-change-me")
 

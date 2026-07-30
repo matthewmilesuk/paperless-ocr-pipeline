@@ -152,6 +152,8 @@ pypdfium2==5.12.1
     # via ocrmypdf
 python-dateutil==2.9.0.post0
     # via croniter
+python-dotenv==1.2.2
+    # via -r requirements.in
 qrcode==8.2
     # via django-two-factor-auth
 redis==8.0.1

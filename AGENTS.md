@@ -120,6 +120,23 @@ python manage.py test
   / `test`), so drift like this can be diffed against a real prior run
   instead of relying on conversation history that doesn't persist between
   sessions.
+- **`.env` vs `.env.local`.** `config/settings.py` loads `.env` first via
+  `python-dotenv`, then `.env.local` on top (if present), overriding any
+  keys in both. `.env` holds the Docker-appropriate values (docker-compose
+  already injects these into the container directly via `env_file`, so
+  this load is a no-op there) — `.env.local` overrides just the handful of
+  keys that need a different value outside Docker, currently
+  `GOOGLE_APPLICATION_CREDENTIALS` (a real host path locally vs. the
+  in-container `/run/secrets/...` path `.env` has). `.env.local` is
+  gitignored and genuinely personal — no `.env.local.example` template,
+  unlike `.env`/`.env.example`.
+  - The `.env.local` load is skipped when `/.dockerenv` exists. This
+    matters because `docker-compose.yml` bind-mounts the whole project
+    directory (`.:/app`), so `.env.local` is visible inside the container
+    too if it exists on the host — without the guard, its override would
+    clobber the correct in-container credentials path with a host path
+    that doesn't exist in the container. Don't remove this guard when
+    touching the env-loading code in `settings.py`.
 
 ## Current state (check before assuming something works)
 
