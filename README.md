@@ -7,9 +7,9 @@ folder. It handles ingest, cleanup, OCR (via Google Document AI), PDF/A
 conversion, and compliance validation — the OCR quality problem, solved once,
 upstream of any downstream classification.
 
-Built for single-user, local-network use: drop a scan in a Samba folder (or
-upload it through the web UI), and get a clean, searchable, validated PDF/A
-back out.
+Built for local-network use by one or more accounts (multi-user, with
+enforced 2FA): drop a scan in a Samba folder (or upload it through the web
+UI), and get a clean, searchable, validated PDF/A back out.
 
 See below for the full project spec, architecture, and setup details.
 
@@ -28,8 +28,14 @@ original plan):
   page itself stays reachable.
 - Per-user job visibility (`ingest.views._jobs_visible_to`) — normal users
   only see/open their own jobs; staff/admin see everything. Verified with
-  a real Django test client. Uploading a file correctly records
-  `uploaded_by` and enqueues a Django-RQ job.
+  a real Django test client.
+- **Real file-saving on both entry points**, sharing one code path
+  (`ingest/services.py`): the web upload view saves the uploaded file into
+  `SCAN_INPUT_DIR` and records a pending `Job` owned by the logged-in
+  user; the watcher does the same for files dropped in the Samba input
+  folder, owned by `DEFAULT_JOB_OWNER_USERNAME` (fails loudly and skips
+  the file if that account is missing or unset, rather than silently
+  leaving a job unattributed). Covered by tests in `ingest/tests.py`.
 - docker-compose scaffold (web, worker, redis, samba, watcher,
   stirling-pdf) and a Dockerfile that builds.
 - Stirling PDF and Google Document AI are wired as *integration points*
@@ -40,14 +46,11 @@ original plan):
 - **Every `pipeline/*.py` stage function raises `NotImplementedError`**
   (`ingest.py`, `cleanup.py`, `split.py`, `ocr.py`, `reassemble.py`,
   `pdfa.py`, `validate.py`, `output.py`). `pipeline/run.py` orchestrates
-  them in order, but running it fails at the first stage — a job enqueued
-  via the web upload form will fail in the RQ worker for this reason.
-- **The web upload view doesn't actually save the uploaded file** —
-  `ingest/views.py` computes the destination path but the write itself is
-  a `# TODO`. The `Job` row is still created and enqueued regardless.
-- **`watcher/watch.py` doesn't create `Job` rows at all yet** — it detects
-  new files in the Samba input folder and only `print()`s. The
-  Samba-drop-to-pipeline path described below isn't connected yet.
+  them in order, but running it fails at the first stage. The web upload
+  view still enqueues it regardless, so that Django-RQ job will fail in
+  the worker; the watcher doesn't enqueue anything yet at all (see
+  `watcher/watch.py`'s `handle_new_scan`), since there's nothing working
+  downstream for it to hand off to.
 - No synchronous-vs-async cutover logic (`SYNCHRONOUS_BATCH_SIZE_LIMIT` is
   a setting; nothing reads it yet).
 - No completion emails (SMTP settings exist; nothing calls `send_mail()`).
@@ -70,8 +73,17 @@ A self-hosted tool to convert scanned documents (from an HP N9120 FN2 scanner,
 duplex, 400 DPI, color) into validated, archival-quality PDF/A files with a
 searchable text layer, for ingestion into Paperless-NGX.
 
-Single user, local network only. No authentication or public-facing
-deployment needed — this is a personal utility, not a hosted service.
+~~Single user, local network only. No authentication or public-facing
+deployment needed — this is a personal utility, not a hosted service.~~
+
+**Updated:** this is a multi-user tool with enforced 2FA (see
+"Authentication & Access Control" below), intended to be usable by other
+Paperless-NGX users too, not a single personal install. Still
+local-network-only in the sense that nothing here is hardened for direct
+internet exposure — no TLS, no rate limiting, permissive `ALLOWED_HOSTS`
+by default — and `docker-compose.yml`'s port bindings aren't restricted
+to localhost, so don't put this host directly on the public internet
+without adding that hardening yourself.
 
 ## Background / Why This Exists
 
@@ -145,8 +157,9 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
 - **Small batches (under ~5 files): synchronous.** Upload/detect → wait a
   few seconds → done.
 - **Larger batches: asynchronous**, via Django-RQ (Redis-backed queue) —
-  chosen over Celery for lower operational complexity given single-user
-  scale. Emails the user (via SMTP, `send_mail()`) when the job completes.
+  chosen over Celery for lower operational complexity given this project's
+  modest scale (a handful of users, not high-volume production traffic).
+  Emails the user (via SMTP, `send_mail()`) when the job completes.
 
 ## Architecture / Services (docker-compose)
 
@@ -165,9 +178,10 @@ just usable on this one machine.
 
 ## Things Deliberately Decided Against (for now)
 
-- ~~No authentication / user accounts — single user, local network only.~~
-  **Superseded:** the web front end now supports multiple users with
-  enforced 2FA — see "Authentication & Access Control" below. The
+- ~~No authentication / user accounts.~~ **Superseded:** the web front end
+  now supports multiple users with enforced 2FA — see "Authentication &
+  Access Control" below. (This is separate from the local-network-only
+  deployment assumption in "Purpose" above, which still holds.) The
   Samba/watcher/worker side has no auth concept and is unaffected.
 - No Celery — Django-RQ is simpler for this scale.
 - No custom-built blank-page detection or rotation logic — Stirling PDF
@@ -216,4 +230,5 @@ which must already exist (create it with `manage.py createsuperuser`).
    or job status; a password alone isn't enough (see "Authentication &
    Access Control" below).
 6. Visit the web UI to upload a document, or drop a PDF into the Samba
-   input share (the watcher doesn't create jobs yet — see "Status" above).
+   input share. Either way a `Job` row gets created and the file saved —
+   actual OCR/PDF-A processing isn't implemented yet (see "Status" above).

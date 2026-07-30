@@ -6,8 +6,17 @@ A self-hosted tool to convert scanned documents (from an HP N9120 FN2 scanner,
 duplex, 400 DPI, color) into validated, archival-quality PDF/A files with a
 searchable text layer, for ingestion into Paperless-NGX.
 
-Single user, local network only. No authentication or public-facing
-deployment needed — this is a personal utility, not a hosted service.
+~~Single user, local network only. No authentication or public-facing
+deployment needed — this is a personal utility, not a hosted service.~~
+
+**Updated:** this is a multi-user tool with enforced 2FA (see
+`README.md` "Authentication & Access Control"), intended to be usable by
+other Paperless-NGX users too, not a single personal install. Still
+local-network-only in the sense that nothing here is hardened for direct
+internet exposure — no TLS, no rate limiting, permissive `ALLOWED_HOSTS`
+by default — and `docker-compose.yml`'s port bindings aren't restricted
+to localhost, so don't put this host directly on the public internet
+without adding that hardening yourself.
 
 ## Background / Why This Exists
 
@@ -81,8 +90,9 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
 - **Small batches (under ~5 files): synchronous.** Upload/detect → wait a
   few seconds → done.
 - **Larger batches: asynchronous**, via Django-RQ (Redis-backed queue) —
-  chosen over Celery for lower operational complexity given single-user
-  scale. Emails the user (via SMTP, `send_mail()`) when the job completes.
+  chosen over Celery for lower operational complexity given this project's
+  modest scale (a handful of users, not high-volume production traffic).
+  Emails the user (via SMTP, `send_mail()`) when the job completes.
 
 ## Architecture / Services (docker-compose)
 
@@ -101,7 +111,10 @@ just usable on this one machine.
 
 ## Things Deliberately Decided Against (for now)
 
-- No authentication / user accounts — single user, local network only.
+- ~~No authentication / user accounts.~~ **Superseded:** the web front end
+  now supports multiple users with enforced 2FA — see `README.md`
+  "Authentication & Access Control". This is separate from the
+  local-network-only deployment assumption above, which still holds.
 - No Celery — Django-RQ is simpler for this scale.
 - No custom-built blank-page detection or rotation logic — Stirling PDF
   already solves this well; don't reinvent it.

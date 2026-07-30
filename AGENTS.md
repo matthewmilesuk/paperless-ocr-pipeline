@@ -7,9 +7,10 @@ not what the project does.
 
 ## What this project is
 
-A single-user, local-network document pipeline that turns raw scans from an
-HP N9120 FN2 (duplex, 400 DPI, color) into validated, archival-quality PDF/A
-files with a searchable text layer, for ingestion into Paperless-NGX.
+A local-network, multi-user document pipeline (enforced 2FA) that turns raw
+scans from an HP N9120 FN2 (duplex, 400 DPI, color) into validated,
+archival-quality PDF/A files with a searchable text layer, for ingestion
+into Paperless-NGX.
 
 **The goal is the best possible output PDF** — not a full document
 management system, not a Paperless replacement. Classification, tagging,
@@ -114,6 +115,6 @@ top of it.
   unattended against irreplaceable scans, so failures need to be loud and
   traceable, not silently swallowed.
 - Log liberally at each pipeline stage boundary (which file, which stage,
-  pass/fail) — this is a single-user tool with no dashboard beyond Django
-  admin and logs, so logs are the primary way of finding out what happened
-  to a given scan.
+  pass/fail) — this is a small self-hosted tool with no dashboard beyond
+  Django admin, the job list view, and logs, so logs are the primary way
+  of finding out what happened to a given scan.
