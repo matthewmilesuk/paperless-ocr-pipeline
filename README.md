@@ -13,6 +13,11 @@ back out.
 
 See below for the full project spec, architecture, and setup details.
 
+## Working in this repo
+
+If you're an AI coding agent (or a human who wants the same context),
+see [AGENTS.md](AGENTS.md) for ground rules before making changes.
+
 ---
 
 # Document Digitization Pipeline — Project Spec
