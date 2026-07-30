@@ -1,15 +1,20 @@
 import shutil
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 import pikepdf
 from django.conf import settings
 from django.test import TestCase, override_settings
+from google.api_core import exceptions as google_exceptions
+from google.auth.exceptions import DefaultCredentialsError
+from google.cloud import documentai
 from pdf2image import convert_from_path
 from PIL import Image, ImageDraw
 
 from ingest.models import BorderlinePage, Job
 from pipeline.cleanup import MEASUREMENT_DPI, cleanup
+from pipeline.ocr import SYNC_PAGE_LIMIT, DocumentTooLongForSyncOCR, ocr_document
 
 PAGE_SIZE = (400, 500)  # px, arbitrary -- only the coverage ratio matters
 PAGE_AREA = PAGE_SIZE[0] * PAGE_SIZE[1]
@@ -145,3 +150,111 @@ class CleanupTests(TestCase):
 
         self.assertAlmostEqual(coverage(rendered[0]), 10.0, delta=2.0)
         self.assertAlmostEqual(coverage(rendered[1]), 40.0, delta=2.0)
+
+
+class OcrDocumentTests(TestCase):
+    """
+    ocr_document() against a mocked Document AI client -- no real API
+    calls here or anywhere else in the automatic test suite. See
+    scripts/smoke-test-ocr.py for the one deliberate, opt-in, real call.
+    """
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp_dir, ignore_errors=True)
+
+    def _pdf_with_pages(self, count):
+        path = Path(self.tmp_dir) / "input.pdf"
+        _write_pdf(path, [_blank_page() for _ in range(count)])
+        return path
+
+    @mock.patch("pipeline.ocr._client")
+    def test_normal_document_processes_with_mocked_response(self, mock_client_factory):
+        fake_document = documentai.Document(
+            text="hello world",
+            pages=[
+                documentai.Document.Page(page_number=1),
+                documentai.Document.Page(page_number=2),
+            ],
+        )
+        mock_client_factory.return_value.process_document.return_value = (
+            documentai.ProcessResponse(document=fake_document)
+        )
+
+        input_pdf = self._pdf_with_pages(2)
+        result = ocr_document(input_pdf, job_id=1)
+
+        self.assertEqual(result.page_count, 2)
+        self.assertEqual(result.document["text"], "hello world")
+        self.assertEqual(len(result.document["pages"]), 2)
+
+        mock_client_factory.return_value.process_document.assert_called_once()
+        request = mock_client_factory.return_value.process_document.call_args.kwargs["request"]
+        self.assertEqual(
+            request.name,
+            f"projects/{settings.GCP_PROJECT_ID}"
+            f"/locations/{settings.GCP_DOCAI_LOCATION}"
+            f"/processors/{settings.GCP_DOCAI_PROCESSOR_ID}",
+        )
+        self.assertEqual(request.raw_document.mime_type, "application/pdf")
+
+    @mock.patch("pipeline.ocr._client")
+    def test_document_over_page_limit_raises_before_api_call(self, mock_client_factory):
+        input_pdf = self._pdf_with_pages(SYNC_PAGE_LIMIT + 1)
+
+        with self.assertRaises(DocumentTooLongForSyncOCR):
+            ocr_document(input_pdf, job_id=2)
+
+        mock_client_factory.assert_not_called()
+
+    @mock.patch("pipeline.ocr._client")
+    def test_auth_failure_logged_and_reraised(self, mock_client_factory):
+        mock_client_factory.return_value.process_document.side_effect = (
+            google_exceptions.Unauthenticated("bad credentials")
+        )
+        input_pdf = self._pdf_with_pages(1)
+
+        with self.assertLogs("pipeline.ocr", level="ERROR") as logs:
+            with self.assertRaises(google_exceptions.Unauthenticated):
+                ocr_document(input_pdf, job_id=3)
+
+        self.assertTrue(any("rejected the credentials" in message for message in logs.output))
+
+    @mock.patch("pipeline.ocr._client")
+    def test_missing_credentials_logged_and_reraised(self, mock_client_factory):
+        mock_client_factory.return_value.process_document.side_effect = (
+            DefaultCredentialsError("no credentials found")
+        )
+        input_pdf = self._pdf_with_pages(1)
+
+        with self.assertLogs("pipeline.ocr", level="ERROR") as logs:
+            with self.assertRaises(DefaultCredentialsError):
+                ocr_document(input_pdf, job_id=4)
+
+        self.assertTrue(any("credentials not found" in message for message in logs.output))
+
+    @mock.patch("pipeline.ocr._client")
+    def test_quota_exceeded_logged_and_reraised(self, mock_client_factory):
+        mock_client_factory.return_value.process_document.side_effect = (
+            google_exceptions.ResourceExhausted("quota exceeded")
+        )
+        input_pdf = self._pdf_with_pages(1)
+
+        with self.assertLogs("pipeline.ocr", level="ERROR") as logs:
+            with self.assertRaises(google_exceptions.ResourceExhausted):
+                ocr_document(input_pdf, job_id=5)
+
+        self.assertTrue(any("quota/rate limit" in message for message in logs.output))
+
+    @mock.patch("pipeline.ocr._client")
+    def test_processor_not_found_logged_and_reraised(self, mock_client_factory):
+        mock_client_factory.return_value.process_document.side_effect = (
+            google_exceptions.NotFound("processor not found")
+        )
+        input_pdf = self._pdf_with_pages(1)
+
+        with self.assertLogs("pipeline.ocr", level="ERROR") as logs:
+            with self.assertRaises(google_exceptions.NotFound):
+                ocr_document(input_pdf, job_id=6)
+
+        self.assertTrue(any("processor not found" in message for message in logs.output))

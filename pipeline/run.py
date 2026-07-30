@@ -43,10 +43,13 @@ def run_pipeline(job_id: int) -> None:
     cleaned_path = cleanup_result.output_path
     # cleanup_result.pages_dropped / .pages_borderline are available here
     # for stage-progress logging once that's wired up (see TODO above).
+    # split still runs for reassemble's page images (the overlay target);
+    # ocr_document() sends cleaned_path directly to Document AI in one
+    # synchronous call rather than per-page images -- see pipeline/ocr.py.
     page_images = split.split_to_page_images(cleaned_path)
-    hocr_pages = ocr.ocr_pages(page_images)
+    ocr_result = ocr.ocr_document(cleaned_path, job_id)
     reassembled_path = reassemble.reassemble(
-        page_images, hocr_pages, output_path=Path(settings.SCAN_OUTPUT_DIR) / f"{job_id}_reassembled.pdf"
+        page_images, ocr_result, output_path=Path(settings.SCAN_OUTPUT_DIR) / f"{job_id}_reassembled.pdf"
     )
     pdfa_path = pdfa.convert_to_pdfa(
         reassembled_path, output_path=Path(settings.SCAN_OUTPUT_DIR) / f"{job_id}_pdfa.pdf"

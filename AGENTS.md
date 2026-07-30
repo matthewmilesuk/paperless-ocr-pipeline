@@ -53,7 +53,7 @@ pipeline/
   ingest.py      - watcher/upload hands off a raw scan here
   cleanup.py     - custom blank-page detection (rasterize + ink coverage)
   split.py       - splits into per-page images (in-memory/temp only)
-  ocr.py         - calls Google Document AI, returns hOCR per page
+  ocr.py         - calls Google Document AI (sync, <=15 pages), returns OcrResult
   reassemble.py  - rebuilds one PDF, original order, invisible text overlay
   pdfa.py        - ocrmypdf: --output-type pdfa, --rotate-pages, --deskew, --optimize
   validate.py    - veraPDF check; failure -> failed/ folder, not output/
@@ -77,6 +77,17 @@ python manage.py test
 # currently stubbed, see below)
 ./scripts/test-all.sh --smoke
 ```
+
+**`scripts/smoke-test-ocr.py` is different from the above and is never
+run automatically — not by `manage.py test`, not by `test-all.sh`, not
+by `--smoke`.** It makes one real, billable call to Google Document AI
+(a fraction of a cent, but real money and a real API call) using
+whatever's configured in `.env`/`.env.local`, to confirm the actual GCP
+setup (credentials, project ID, processor ID, IAM role) works end to
+end — not something a mocked test suite can verify. Run it deliberately:
+`python scripts/smoke-test-ocr.py [path/to/scan.pdf]` (defaults to the
+synthetic `tests/fixtures/sample_scan.pdf` if no path given). See its
+own docstring for details.
 
 ## Local development
 
@@ -145,13 +156,30 @@ stubs tied to the spec, not working code. Don't assume a stage works
 because the file exists and has the right signature; check for
 `NotImplementedError` or a TODO before building on top of it.
 
-`pipeline/cleanup.py` is the exception: it's implemented and tested
-(`pipeline/tests.py`) — rasterizes each page via `pdf2image`, measures
-ink coverage, drops confidently-blank pages, and logs borderline ones as
-`ingest.models.BorderlinePage`. Note its return type is `CleanupResult`
-(cleaned PDF path + per-stage counts), not a bare `Path` — `pipeline/run.py`
-was updated to match (`cleanup_result.output_path`), since it's the only
-stage function whose contract changed once actually implemented.
+`pipeline/cleanup.py` and `pipeline/ocr.py` are the exceptions: both are
+implemented and tested (`pipeline/tests.py`).
+
+- `cleanup.py` rasterizes each page via `pdf2image`, measures ink
+  coverage, drops confidently-blank pages, and logs borderline ones as
+  `ingest.models.BorderlinePage`. Returns `CleanupResult` (cleaned PDF
+  path + per-stage counts), not a bare `Path`.
+- `ocr.py` sends the cleaned PDF straight to Document AI's *synchronous*
+  process endpoint in one call (not one call per page — Document AI
+  handles page segmentation itself). Raises
+  `ocr.DocumentTooLongForSyncOCR` without calling the API at all for
+  documents over the 15-page sync limit (see PROJECT_SPEC.md "OCR -
+  Google Document AI"). Returns `OcrResult` (the full serialized Document
+  AI response + page count), not `List[str]` of hOCR. **Tests mock the
+  Document AI client entirely — no real API calls in the automatic test
+  suite, ever** (see "Running tests" above for the one deliberate,
+  billable exception: `scripts/smoke-test-ocr.py`).
+
+Both changed their stage function's contract by actually being
+implemented — `pipeline/run.py` and `pipeline/reassemble.py`'s type hints
+were updated to match (`cleanup_result.output_path`, `ocr_result` instead
+of `hocr_pages`), since leaving call sites referencing a signature that
+no longer exists isn't an option. `reassemble.py` itself is still a
+stub — only its parameter type hint changed to stay accurate.
 
 ## Auth & job visibility
 

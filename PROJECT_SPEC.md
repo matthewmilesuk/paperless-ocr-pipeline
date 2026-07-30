@@ -64,7 +64,18 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
    - Processor: Enterprise Document OCR
    - Cost: ~$1.50 per 1,000 pages (current tier, well under the
      5,000,000 pages/month threshold for this project's volume)
-   - Output: hOCR (text + layout position per page)
+   - Output: the full Document AI response, serialized (whole-document
+     text plus per-page layout/bounding-box data) — `reassemble.py`
+     converts this into whatever overlay format it ends up using (e.g.
+     hOCR) at that stage, not here, so nothing Document AI returns is
+     discarded before it's needed.
+   - **Known v1 limitation:** uses Document AI's *synchronous* process
+     endpoint (one API call for the whole document), which caps input at
+     15 pages (30 with `imageless_mode`, which trades off some accuracy —
+     not used). Documents over 15 pages raise a clear, specific error
+     rather than being silently truncated or attempted anyway. Batch
+     processing (via Cloud Storage, up to 500 pages) would lift this cap
+     but isn't built yet — see "Things Deliberately Decided Against".
 
 5. **Reassemble + overlay** — rebuild a single PDF in original page order,
    overlaying the OCR'd text as an invisible layer on top of the original
@@ -124,6 +135,13 @@ just usable on this one machine.
   blank-page detection is now custom-built after all.
 - No downscaling of source scans to control file size — let `ocrmypdf`
   optimization handle that after OCR, not before.
+- No batch OCR processing (Cloud Storage-based, up to 500 pages) yet —
+  the synchronous endpoint's 15-page cap is enough for this project's
+  actual volume (single-scanner, one-document-at-a-time). A future
+  enhancement, not an oversight: documents over the cap raise
+  `pipeline.ocr.DocumentTooLongForSyncOCR` rather than being silently
+  truncated or mishandled, so this is a deliberate, visible scope cut
+  rather than a bug waiting to happen.
 
 ## Decisions Changed
 
