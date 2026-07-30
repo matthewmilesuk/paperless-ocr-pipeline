@@ -27,6 +27,7 @@ from pipeline.reassemble import (
     _visual_to_raw,
     reassemble,
 )
+from pipeline.validate import validate_pdfa
 
 PAGE_SIZE = (400, 500)  # px, arbitrary -- only the coverage ratio matters
 PAGE_AREA = PAGE_SIZE[0] * PAGE_SIZE[1]
@@ -655,8 +656,7 @@ class PdfaTests(TestCase):
     """
     Exercises the real ocrmypdf (+ ghostscript, pngquant) machinery for
     the same reason as OrientTests. Requires ghostscript/pngquant on
-    PATH -- ghostscript is already in the Dockerfile; pngquant is
-    currently NOT (see AGENTS.md/PROJECT_SPEC.md flag on this).
+    PATH -- both are in the Dockerfile.
     """
 
     def setUp(self):
@@ -702,3 +702,78 @@ class PdfaTests(TestCase):
 
         extracted = extract_text(str(output_path))
         self.assertIn("Findable invisible text", extracted)
+
+
+class ValidateTests(TestCase):
+    """
+    Exercises the real veraPDF CLI -- deliberately not mocked, same
+    reasoning as OrientTests/PdfaTests: this stage's entire job is
+    correctly driving that tool. Requires `verapdf` on PATH (in the
+    Dockerfile; see AGENTS.md "Local development" for the local install).
+    """
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp_dir, ignore_errors=True)
+
+    def _plain_pdf_with_invisible_text(self, text="Hello invisible world"):
+        """Not PDF/A -- no XMP metadata, no PDF/A markers. The
+        non-compliant case."""
+        buf = io.BytesIO()
+        c = reportlab_canvas.Canvas(buf, pagesize=(300, 400))
+        text_obj = c.beginText(10, 10)
+        text_obj.setTextRenderMode(3)
+        text_obj.setFont("Helvetica", 12)
+        text_obj.textOut(text)
+        c.drawText(text_obj)
+        c.showPage()
+        c.save()
+
+        path = Path(self.tmp_dir) / "plain.pdf"
+        with pikepdf.open(io.BytesIO(buf.getvalue())) as pdf:
+            pdf.save(str(path))
+        return path
+
+    def _real_pdfa(self):
+        """A genuine PDF/A-2b file via the real pdfa.py stage -- the
+        compliant case, matching actual pipeline output exactly."""
+        plain = self._plain_pdf_with_invisible_text()
+        output_path = Path(self.tmp_dir) / "compliant.pdf"
+        return convert_to_pdfa(plain, output_path)
+
+    def _garbage_file(self):
+        path = Path(self.tmp_dir) / "garbage.pdf"
+        path.write_text("this is not a pdf at all")
+        return path
+
+    def test_compliant_pdfa_passes(self):
+        pdfa_path = self._real_pdfa()
+
+        result = validate_pdfa(pdfa_path, job_id=1)
+
+        self.assertTrue(result.compliant)
+        self.assertFalse(result.parse_failure)
+        # The full veraPDF report is preserved, not discarded.
+        self.assertTrue(
+            result.report["report"]["jobs"][0]["validationResult"][0]["compliant"]
+        )
+
+    def test_non_compliant_pdf_fails_with_rule_details(self):
+        plain_path = self._plain_pdf_with_invisible_text()
+
+        result = validate_pdfa(plain_path, job_id=2)
+
+        self.assertFalse(result.compliant)
+        self.assertFalse(result.parse_failure)
+        # A real rule violation (missing PDF/A metadata) should be
+        # captured in the summary, not just "failed".
+        self.assertIn("6.6.2.1", result.summary)
+
+    def test_garbage_file_hits_parse_failure_path_distinctly(self):
+        garbage_path = self._garbage_file()
+
+        result = validate_pdfa(garbage_path, job_id=3)
+
+        self.assertFalse(result.compliant)
+        self.assertTrue(result.parse_failure)
+        self.assertIn("parse", result.summary.lower())

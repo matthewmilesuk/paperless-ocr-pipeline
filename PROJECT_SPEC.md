@@ -120,9 +120,18 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
      level but only produces a warning, not a failure, if missing —
      not currently installed, lower priority.
 
-7. **Validate — veraPDF** — confirms actual PDF/A compliance. If validation
-   fails, the file does NOT proceed to the output folder. It's moved to a
-   `failed/` folder with a log entry for manual review instead.
+7. **Validate — veraPDF** — confirms actual PDF/A-2b compliance via the
+   real `verapdf` CLI (`--flavour 2b --format json`; not apt-installable —
+   see the `Dockerfile` and `docker/verapdf-auto-install.xml` for how it's
+   installed). If
+   validation fails, the file does NOT proceed to the output folder. It's
+   moved to a `failed/` folder with a log entry for manual review instead.
+   Two distinct failure modes, not lumped together: a genuine PDF/A rule
+   violation (logged with the specific ISO clause + description) versus
+   veraPDF being unable to parse the file at all, which means something
+   upstream in the pipeline produced a broken file rather than a
+   legitimate document merely failing a compliance check — logged more
+   loudly, since it points at a real bug rather than a routine edge case.
 
 8. **Output** — finished PDF/A lands in the folder Paperless-NGX watches.
 

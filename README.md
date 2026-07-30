@@ -38,7 +38,7 @@ original plan):
   leaving a job unattributed). Covered by tests in `ingest/tests.py`.
 - docker-compose scaffold (web, worker, redis, samba, watcher) and a
   Dockerfile that builds.
-- **Five pipeline stages are real, not stubs**, each covered by tests in
+- **Six pipeline stages are real, not stubs**, each covered by tests in
   `pipeline/tests.py`:
   - `cleanup.py` — custom blank-page detection (rasterize, measure ink
     coverage, drop confidently-blank pages, log borderline ones).
@@ -60,10 +60,17 @@ original plan):
     rotate/deskew — see `orient.py` above). `--optimize 3` needs
     `pngquant`, now in the Dockerfile (was missing at first — a hard
     failure, confirmed and then fixed).
+  - `validate.py` — calls the real `verapdf` CLI (not apt-installable —
+    installed via the Dockerfile + `docker/verapdf-auto-install.xml`).
+    Distinguishes a genuine PDF/A rule violation from veraPDF being
+    unable to parse the file at all — the latter logged more loudly,
+    since it points at a pipeline bug rather than a routine compliance
+    miss. Tests run against real files (compliant, non-compliant,
+    unparseable), not mocked.
 
 **Still a stub / not working yet:**
 - **The remaining `pipeline/*.py` stage functions raise
-  `NotImplementedError`** (`ingest.py`, `validate.py`, `output.py`).
+  `NotImplementedError`** (`ingest.py`, `output.py`).
   `pipeline/run.py` orchestrates all stages in order, but running it
   fails at the first remaining stub. The web upload view
   still enqueues it regardless, so that Django-RQ job will fail in the
@@ -196,9 +203,13 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
      first — a hard failure, confirmed by running this locally without
      it before adding it and re-verifying in a rebuilt container).
 
-7. **Validate — veraPDF** — confirms actual PDF/A compliance. If validation
-   fails, the file does NOT proceed to the output folder. It's moved to a
-   `failed/` folder with a log entry for manual review instead.
+7. **Validate — veraPDF** — confirms actual PDF/A-2b compliance via the
+   real `verapdf` CLI (not apt-installable — see `Dockerfile` /
+   `docker/verapdf-auto-install.xml`). If validation fails, the file does
+   NOT proceed to the output folder. It's moved to a `failed/` folder
+   with a log entry for manual review instead — distinguishing a genuine
+   rule violation from veraPDF being unable to parse the file at all
+   (the latter meaning a bug upstream in the pipeline, logged louder).
 
 8. **Output** — finished PDF/A lands in the folder Paperless-NGX watches.
 

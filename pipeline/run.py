@@ -58,7 +58,10 @@ def run_pipeline(job_id: int) -> None:
         reassembled_path, output_path=Path(settings.SCAN_OUTPUT_DIR) / f"{job_id}_pdfa.pdf"
     )
 
-    if validate.validate_pdfa(pdfa_path):
+    validation_result = validate.validate_pdfa(pdfa_path, job_id)
+    if validation_result.compliant:
         output.deliver_output(pdfa_path, Path(settings.SCAN_OUTPUT_DIR))
     else:
-        output.deliver_failed(pdfa_path, Path(settings.SCAN_FAILED_DIR), reason="veraPDF validation failed")
+        output.deliver_failed(
+            pdfa_path, Path(settings.SCAN_FAILED_DIR), reason=validation_result.summary
+        )

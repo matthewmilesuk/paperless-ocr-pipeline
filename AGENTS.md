@@ -56,7 +56,7 @@ pipeline/
   ocr.py         - calls Google Document AI (sync, <=15 pages), returns OcrResult
   reassemble.py  - invisible text overlay onto oriented_path's own pages (no split step)
   pdfa.py        - ocrmypdf: --output-type pdfa, --skip-text, --optimize (no rotate/deskew here)
-  validate.py    - veraPDF check; failure -> failed/ folder, not output/
+  validate.py    - real verapdf CLI check, returns ValidationResult (compliant/parse_failure/summary)
   output.py      - writes to the folder Paperless-NGX watches
   run.py         - orchestrates the above, in this order
 ```
@@ -174,9 +174,9 @@ because the file exists and has the right signature; check for
 `NotImplementedError` or a TODO before building on top of it.
 
 `pipeline/cleanup.py`, `pipeline/orient.py`, `pipeline/ocr.py`,
-`pipeline/reassemble.py`, and `pipeline/pdfa.py` are the exceptions: all
-five are implemented and tested (`pipeline/tests.py`).
-`pipeline/split.py` no longer exists — see below.
+`pipeline/reassemble.py`, `pipeline/pdfa.py`, and `pipeline/validate.py`
+are the exceptions: all six are implemented and tested
+(`pipeline/tests.py`). `pipeline/split.py` no longer exists — see below.
 
 - `cleanup.py` rasterizes each page via `pdf2image`, measures ink
   coverage, drops confidently-blank pages, and logs borderline ones as
@@ -233,6 +233,25 @@ five are implemented and tested (`pipeline/tests.py`).
   rebuilt container. `jbig2` is also recommended for this optimize level
   but only warns, doesn't fail, if missing — not installed, lower
   priority than `pngquant` was.
+- `validate.py` calls the real `verapdf` CLI (`--flavour 2b --format
+  json`) — not apt-installable, see the Dockerfile / `docker/
+  verapdf-auto-install.xml` and the pinning note below for how it gets
+  installed. Returns `ValidationResult` (`compliant`, `parse_failure`,
+  a human-readable `summary`, and the full parsed report — nothing
+  discarded), not a bare `bool`; `run.py` was updated to use
+  `validation_result.compliant` and thread `.summary` into
+  `output.deliver_failed()`'s `reason=`, instead of a hardcoded string.
+  Distinguishes two real failure modes rather than lumping them together:
+  a genuine PDF/A-2b rule violation (exit 1, `compliant: false`, logged
+  with the specific ISO clause + description from
+  `details.ruleSummaries`) versus veraPDF being unable to parse the file
+  at all (exit 7, `taskException` with `type: "PARSE"` instead of a
+  `validationResult`) — the latter means something upstream in the
+  pipeline produced a broken file, not that a legitimate document merely
+  failed a compliance check, and is logged louder for that reason. All
+  three outcomes (compliant / non-compliant / unparseable) were verified
+  against real files before writing this, not assumed from veraPDF's
+  docs.
 
 `pipeline/split.py` was removed (see `PROJECT_SPEC.md` pipeline stage
 list) — it rasterized pages for the *old* per-page-image OCR design.
