@@ -7,6 +7,44 @@ Versioning is semantic-ish and appropriate to a pre-1.0, single-developer
 scaffold — a MINOR bump per meaningful milestone, PATCH reserved for fixes
 within one.
 
+## [0.10.0] - 2026-07-30
+
+`pipeline/ingest.py` is implemented — all 8 pipeline stages are now real,
+not stubs, for the first time.
+
+### Added
+- `pipeline/ingest.py` — a small validation gate, not a transformation:
+  confirms the input genuinely opens as a PDF via `pikepdf` (not a
+  `.pdf`-extension/header sniff) and returns it unchanged. Three
+  distinct, separately-logged failure types instead of a generic
+  exception: `EmptyFileError` (zero-byte file), `UnreadablePdfError`
+  (`pikepdf.PdfError` — corrupted, or not actually a PDF despite the
+  extension), `EmptyPdfError` (opens fine but has zero pages — confirmed
+  as a real, separately-constructible case before writing the check:
+  `pikepdf.new()` with no pages added saves and reopens without error).
+- `pipeline/tests.py` — 4 new tests: a valid PDF passes through
+  unchanged; an empty file, a corrupted/non-PDF file, and a
+  technically-valid zero-page PDF are each rejected with their own
+  distinct exception type.
+
+### Changed
+- `pipeline/run.py`: `ingest.ingest()` now takes `job_id` too, matching
+  `cleanup`/`orient`/`ocr`'s `(input_path, job_id)` signature, for the
+  same `[stage] job=%s` log correlation the rest of the pipeline uses.
+
+### Notes
+This is a genuine milestone (all 8 `pipeline/*.py` stages implemented
+and tested) but explicitly **not** a claim that the pipeline works:
+`pipeline.run.run_pipeline()` has never been run end to end against a
+real scan, and still has no failure handling between stages — an
+exception from any stage before `validate.py` propagates uncaught rather
+than routing to `output.deliver_failed()`; only the veraPDF
+validation-failure path is wired up. `PROJECT_SPEC.md`/`AGENTS.md`/
+`README.md` updated to state both things clearly side by side, so
+"all stages implemented" doesn't get conflated with "the pipeline
+works" — an actual end-to-end run against a real scan is the next
+milestone, not this one.
+
 ## [0.9.0] - 2026-07-30
 
 `pipeline/validate.py` is implemented and tested, plus the veraPDF
