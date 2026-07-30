@@ -1,0 +1,143 @@
+# Paperless OCR Pipeline
+
+A self-hosted pipeline that turns raw scans into validated, archival-quality
+PDF/A files with a searchable text layer, ready to drop into
+[Paperless-NGX](https://github.com/paperless-ngx/paperless-ngx)'s watch
+folder. It handles ingest, cleanup, OCR (via Google Document AI), PDF/A
+conversion, and compliance validation — the OCR quality problem, solved once,
+upstream of any downstream classification.
+
+Built for single-user, local-network use: drop a scan in a Samba folder (or
+upload it through the web UI), and get a clean, searchable, validated PDF/A
+back out.
+
+See below for the full project spec, architecture, and setup details.
+
+---
+
+# Document Digitization Pipeline — Project Spec
+
+## Purpose
+
+A self-hosted tool to convert scanned documents (from an HP N9120 FN2 scanner,
+duplex, 400 DPI, color) into validated, archival-quality PDF/A files with a
+searchable text layer, for ingestion into Paperless-NGX.
+
+Single user, local network only. No authentication or public-facing
+deployment needed — this is a personal utility, not a hosted service.
+
+## Background / Why This Exists
+
+Inspired by a community write-up on Paperless-NGX + AI classification pipelines.
+Key lesson taken from that article: **OCR quality is the bottleneck**, not the
+downstream classification model. Tesseract (Paperless's default) wasn't
+sufficient for archival-grade text extraction; Google Document AI performed
+significantly better in side-by-side testing.
+
+This project focuses specifically on the **OCR + PDF/A conversion** stage —
+turning a raw scan into a clean, validated, searchable archival PDF. It does
+NOT cover downstream classification (correspondent/title/tag assignment) —
+that remains Paperless-NGX's job once the file lands in its watch folder.
+
+## Inputs
+
+- One PDF per scan job from the HP N9120 FN2, delivered via its
+  scan-to-network-folder (Samba) feature.
+- Duplex, 400 DPI, color.
+- **One PDF in → one PDF out.** No file-splitting or multi-file output;
+  page order must be preserved (minus dropped blank pages).
+
+## Pipeline (in order)
+
+1. **Ingest** — file lands in the Samba input folder. A `watchdog`-based
+   watcher process detects the new file and kicks off the pipeline. The same
+   pipeline function is also triggered by the web UI upload, so there's one
+   code path regardless of entry point.
+
+2. **Cleanup pass (Stirling PDF API)**
+   - Deskew / auto-rotate
+   - Blank page removal
+   - Confidently-blank pages (≈ under 0.5% ink coverage) are dropped
+     automatically. Borderline pages (≈ 0.5–3%) are **kept in the final
+     document by default** (never silently dropped) but logged for manual
+     review, since a false-positive blank-page drop is unrecoverable once
+     the source paper is shredded. Threshold is configurable.
+
+3. **Split** into individual page images (in-memory / temp files only —
+   never persisted to disk as separate files).
+
+4. **OCR — Google Document AI**
+   - Processor: Enterprise Document OCR
+   - Cost: ~$1.50 per 1,000 pages (current tier, well under the
+     5,000,000 pages/month threshold for this project's volume)
+   - Output: hOCR (text + layout position per page)
+
+5. **Reassemble + overlay** — rebuild a single PDF in original page order,
+   overlaying the OCR'd text as an invisible layer on top of the original
+   page image (so the file looks like the scan but is fully searchable/
+   copyable).
+
+6. **PDF/A conversion** — via `ocrmypdf` (either called directly, or through
+   the Stirling PDF API which wraps the same tool):
+   - `--output-type pdfa`
+   - `--rotate-pages` / `--deskew` as a safety net
+   - `--optimize 3` for file size reduction (JBIG2 for bitonal content,
+     smarter JPEG handling for color) — this is where file size gets
+     controlled, NOT by downscaling the source scan. The 400 DPI color
+     source is the archival "source of truth" and should never be
+     pre-shrunk before this point.
+
+7. **Validate — veraPDF** — confirms actual PDF/A compliance. If validation
+   fails, the file does NOT proceed to the output folder. It's moved to a
+   `failed/` folder with a log entry for manual review instead.
+
+8. **Output** — finished PDF/A lands in the folder Paperless-NGX watches.
+
+## Processing Mode
+
+- **Small batches (under ~5 files): synchronous.** Upload/detect → wait a
+  few seconds → done.
+- **Larger batches: asynchronous**, via Django-RQ (Redis-backed queue) —
+  chosen over Celery for lower operational complexity given single-user
+  scale. Emails the user (via SMTP, `send_mail()`) when the job completes.
+
+## Architecture / Services (docker-compose)
+
+| Service   | Purpose                                                          |
+|-----------|-------------------------------------------------------------------|
+| `web`     | Django app — upload UI, job status                                |
+| `worker`  | Django-RQ worker (same codebase, different entrypoint)             |
+| `redis`   | Queue backend for `worker`                                        |
+| `samba`   | Samba share for scan-to-folder input + watched output folder (`dperson/samba` image) |
+| `watcher` | `watchdog`-based process monitoring the Samba input folder, triggers pipeline |
+| `stirling-pdf` | Cleanup pass (deskew, blank-page removal) + PDF/A conversion via its API |
+
+Everything reproducible via `docker-compose.yml` + a `.env.example` +
+a setup script. Should be shareable with other Paperless-NGX users, not
+just usable on this one machine.
+
+## Things Deliberately Decided Against (for now)
+
+- No authentication / user accounts — single user, local network only.
+- No Celery — Django-RQ is simpler for this scale.
+- No custom-built blank-page detection or rotation logic — Stirling PDF
+  already solves this well; don't reinvent it.
+- No downscaling of source scans to control file size — let `ocrmypdf`
+  optimization handle that after OCR, not before.
+
+## Open Questions / To Be Decided
+
+- Exact naming/tagging convention for output files.
+- Behavior when a job fails partway through (retry? quarantine? notify?).
+- Whether the "borderline blank page" log should be a flat file, a DB
+  table visible in the Django admin, or something else.
+
+## Getting Started
+
+1. Copy `.env.example` to `.env` and fill in your values (GCP credentials,
+   processor IDs, SMTP settings, folder paths).
+2. Drop your GCP service account key JSON where `.env` points
+   `GOOGLE_APPLICATION_CREDENTIALS` to.
+3. Run `./setup.sh` to build and start the stack.
+4. Visit the web UI to upload a document, or drop a PDF into the Samba
+   input share.

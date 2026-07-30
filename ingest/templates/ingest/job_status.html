@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Job {{ job.id }} - Paperless OCR Pipeline</title>
+</head>
+<body>
+  <h1>Job #{{ job.id }}</h1>
+  <p>File: {{ job.original_filename }}</p>
+  <p>Status: {{ job.get_status_display }}</p>
+  {% if job.error_message %}
+    <pre>{{ job.error_message }}</pre>
+  {% endif %}
+</body>
+</html>

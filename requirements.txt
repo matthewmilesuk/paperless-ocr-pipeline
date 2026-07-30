@@ -1,0 +1,20 @@
+# Web app / job queue
+Django>=5.0,<6.0
+django-rq>=2.10
+redis>=5.0
+
+# OCR / GCP
+google-cloud-documentai>=2.29
+google-cloud-storage>=2.16
+
+# PDF processing
+ocrmypdf>=16.0
+pdf2image>=1.17
+pikepdf>=8.15
+Pillow>=10.3
+
+# Ingest watcher
+watchdog>=4.0
+
+# WSGI server for the web service
+gunicorn>=22.0

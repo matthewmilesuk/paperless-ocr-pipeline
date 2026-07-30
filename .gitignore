@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project-specific: GCP service account key, local scan data
+gcp-credentials.json
+/data/
