@@ -123,11 +123,18 @@ python manage.py test
 
 ## Current state (check before assuming something works)
 
-As of the initial scaffold, `pipeline/*.py` stage functions raise
-`NotImplementedError` — they're stubs tied to the spec, not working code.
-Don't assume a stage works because the file exists and has the right
-signature; check for `NotImplementedError` or a TODO before building on
-top of it.
+Most `pipeline/*.py` stage functions still raise `NotImplementedError` —
+stubs tied to the spec, not working code. Don't assume a stage works
+because the file exists and has the right signature; check for
+`NotImplementedError` or a TODO before building on top of it.
+
+`pipeline/cleanup.py` is the exception: it's implemented and tested
+(`pipeline/tests.py`) — rasterizes each page via `pdf2image`, measures
+ink coverage, drops confidently-blank pages, and logs borderline ones as
+`ingest.models.BorderlinePage`. Note its return type is `CleanupResult`
+(cleaned PDF path + per-stage counts), not a bare `Path` — `pipeline/run.py`
+was updated to match (`cleanup_result.output_path`), since it's the only
+stage function whose contract changed once actually implemented.
 
 ## Auth & job visibility
 

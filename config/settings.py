@@ -121,8 +121,6 @@ SCAN_INPUT_DIR = os.environ.get("SCAN_INPUT_DIR", "/data/input")
 SCAN_OUTPUT_DIR = os.environ.get("SCAN_OUTPUT_DIR", "/data/output")
 SCAN_FAILED_DIR = os.environ.get("SCAN_FAILED_DIR", "/data/failed")
 
-STIRLING_PDF_URL = os.environ.get("STIRLING_PDF_URL", "http://stirling-pdf:8080")
-
 GOOGLE_APPLICATION_CREDENTIALS = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
 GCP_PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "")
 GCP_DOCAI_LOCATION = os.environ.get("GCP_DOCAI_LOCATION", "us")

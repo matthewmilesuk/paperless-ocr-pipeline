@@ -39,7 +39,10 @@ def run_pipeline(job_id: int) -> None:
     input_path = Path(job.input_path)
 
     validated_input = ingest.ingest(input_path)
-    cleaned_path = cleanup.cleanup(validated_input, job_id)
+    cleanup_result = cleanup.cleanup(validated_input, job_id)
+    cleaned_path = cleanup_result.output_path
+    # cleanup_result.pages_dropped / .pages_borderline are available here
+    # for stage-progress logging once that's wired up (see TODO above).
     page_images = split.split_to_page_images(cleaned_path)
     hocr_pages = ocr.ocr_pages(page_images)
     reassembled_path = reassemble.reassemble(

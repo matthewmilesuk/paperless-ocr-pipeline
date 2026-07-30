@@ -5,7 +5,7 @@
 # Default: runs Django unit tests only (fast, no external services needed).
 # --smoke:  additionally runs a full pipeline smoke test against a sample
 #           scan, checking the final output validates as PDF/A via veraPDF.
-#           Requires the docker-compose stack to be up (Stirling PDF, etc.)
+#           Requires the docker-compose stack to be up (redis, samba, etc.)
 #           and real GCP credentials configured — not run by default since
 #           it costs a small amount (Document AI OCR calls) and needs infra.
 #
