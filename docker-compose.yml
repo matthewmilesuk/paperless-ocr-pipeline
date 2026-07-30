@@ -15,7 +15,6 @@ services:
     env_file: .env
     depends_on:
       - redis
-      - stirling-pdf
     restart: unless-stopped
 
   worker:
@@ -28,7 +27,6 @@ services:
     env_file: .env
     depends_on:
       - redis
-      - stirling-pdf
     restart: unless-stopped
 
   watcher:
@@ -65,19 +63,6 @@ services:
       - scan-data:/data
     restart: unless-stopped
 
-  # Cleanup pass (deskew / blank-page removal) + PDF/A conversion API.
-  # See https://github.com/Stirling-Tools/Stirling-PDF
-  stirling-pdf:
-    image: frooodle/s-pdf:latest
-    ports:
-      - "8080:8080"
-    environment:
-      - DOCKER_ENABLE_SECURITY=false
-    volumes:
-      - stirling-data:/usr/share/tessdata
-    restart: unless-stopped
-
 volumes:
   scan-data:
   redis-data:
-  stirling-data:
