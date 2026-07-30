@@ -1,0 +1,39 @@
+# Direct dependencies with intended version constraints.
+#
+# Compile to requirements.txt with:
+#   pip-compile requirements.in
+#
+# To deliberately upgrade a version, edit the constraint here (or bump the
+# exact pin) and recompile with:
+#   pip-compile --upgrade requirements.in
+#
+# Never hand-edit requirements.txt or `pip install` a newer version without
+# updating this file first -- see AGENTS.md "Local development".
+
+# Web app / job queue
+Django==5.2.16
+django-rq==4.1.1
+redis==8.0.1
+
+# Auth / 2FA (TOTP + backup codes -- no SMS/Twilio backend)
+django-otp==1.7.0
+django-two-factor-auth==1.18.1
+
+# OCR / GCP
+google-cloud-documentai==3.15.0
+google-cloud-storage==3.13.0
+
+# PDF processing
+ocrmypdf==17.8.1
+pdf2image==1.17.0
+pikepdf==10.10.0
+# Image parsing library with frequent CVEs -- allow patch/minor upgrades for
+# security fixes rather than pinning to one exact release.
+Pillow>=12.3,<13.0
+
+# Ingest watcher
+watchdog==6.0.0
+
+# WSGI server for the web service -- network-facing, same rationale as
+# Pillow above: allow patch-level security fixes.
+gunicorn>=26.0,<27.0
