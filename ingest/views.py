@@ -1,12 +1,10 @@
-from pathlib import Path
-
 import django_rq
-from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import get_object_or_404, redirect, render
 
 from .forms import UploadForm
 from .models import Job
+from .services import create_job_from_upload
 
 
 def _jobs_visible_to(user):
@@ -24,24 +22,17 @@ def _jobs_visible_to(user):
 @login_required
 def upload(request):
     """
-    Web UI upload entry point. Saves the incoming file into the same
-    input directory the Samba watcher monitors, then enqueues the same
-    pipeline entrypoint the watcher uses -- one code path regardless of
-    how the job was triggered (see PROJECT_SPEC.md).
+    Web UI upload entry point. Saves the file and records a pending Job
+    via ingest.services.create_job_from_upload() -- the same
+    job-creation logic the watcher uses (see ingest/services.py) -- then
+    enqueues pipeline.run.run_pipeline(), which currently fails
+    immediately since the pipeline stages are still stubs (see
+    AGENTS.md "Current state").
     """
     if request.method == "POST":
         form = UploadForm(request.POST, request.FILES)
         if form.is_valid():
-            uploaded = form.cleaned_data["file"]
-            input_path = Path(settings.SCAN_INPUT_DIR) / uploaded.name
-            # TODO: stream `uploaded` to `input_path`.
-
-            job = Job.objects.create(
-                original_filename=uploaded.name,
-                source=Job.Source.UPLOAD,
-                input_path=str(input_path),
-                uploaded_by=request.user,
-            )
+            job = create_job_from_upload(form.cleaned_data["file"], owner=request.user)
 
             # TODO: below ~5 files, run pipeline.run_pipeline() synchronously
             # instead of enqueuing -- see PROJECT_SPEC.md "Processing Mode".
