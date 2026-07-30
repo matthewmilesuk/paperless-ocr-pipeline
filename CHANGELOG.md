@@ -7,6 +7,48 @@ Versioning is semantic-ish and appropriate to a pre-1.0, single-developer
 scaffold — a MINOR bump per meaningful milestone, PATCH reserved for fixes
 within one.
 
+## [0.6.0] - 2026-07-30
+
+First pipeline stage calling a live external API: `pipeline/ocr.py`
+(Google Document AI) is implemented and tested, no longer a stub.
+
+### Added
+- `pipeline/ocr.py` — sends the cleaned PDF to Document AI's
+  *synchronous* process endpoint in one API call (Document AI segments
+  pages itself; this is not a per-page call loop). Checks page count via
+  `pikepdf` first and raises `DocumentTooLongForSyncOCR` without calling
+  the API at all over the endpoint's 15-page cap — batch processing
+  (Cloud Storage, up to 500 pages) would lift this but isn't built yet
+  (documented as a known v1 limitation in `PROJECT_SPEC.md`, not an
+  oversight). Client uses a location-specific endpoint and Application
+  Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, no hardcoded
+  path). Real API failures — missing/invalid credentials, rejected
+  credentials, missing IAM role, quota/rate limit, wrong processor ID —
+  each get a distinct, clear log message before the original exception
+  re-raises. Returns `OcrResult`: the full Document AI response
+  serialized via `Document.to_dict()` (text, per-page layout, bounding
+  boxes — nothing discarded) plus a page count.
+- `scripts/smoke-test-ocr.py` — deliberate, opt-in script making ONE
+  real, billable Document AI call to confirm the actual GCP setup works
+  end to end. Never run by `manage.py test` or `test-all.sh`.
+- `tests/fixtures/sample_scan.pdf` — synthetic single-page fixture
+  (placeholder text via PIL), used by the smoke test script and
+  satisfying `test-all.sh --smoke`'s pre-existing (previously unmet)
+  expectation of that file.
+- `pipeline/tests.py` — 6 new tests, all against a mocked Document AI
+  client (real proto-typed responses, not deep mocks): normal document
+  processes correctly, over-limit document raises before any client call
+  is constructed, and each of the four API error types logs
+  distinguishably and re-raises its specific exception type. No real API
+  calls in the automatic test suite, ever.
+
+### Changed
+- `pipeline/run.py` and `pipeline/reassemble.py` updated to match
+  `ocr_document()`'s new contract (cleaned PDF path in, `OcrResult` out,
+  instead of pre-split page images in, `List[str]` hOCR out).
+  `reassemble.py` itself is still a stub — only its type hint changed to
+  stay accurate.
+
 ## [0.5.0] - 2026-07-30
 
 First real pipeline stage: `pipeline/cleanup.py` is implemented and
