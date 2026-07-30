@@ -57,9 +57,9 @@ original plan):
     included. See `AGENTS.md` "Current state" for the caveat on how far
     the rotation handling has actually been verified.
   - `pdfa.py` — ocrmypdf PDF/A conversion (`--skip-text`, no
-    rotate/deskew — see `orient.py` above). **Known infra gap:**
-    `--optimize 3` needs `pngquant`, not currently in the Dockerfile
-    (confirmed by hitting the actual failure locally without it).
+    rotate/deskew — see `orient.py` above). `--optimize 3` needs
+    `pngquant`, now in the Dockerfile (was missing at first — a hard
+    failure, confirmed and then fixed).
 
 **Still a stub / not working yet:**
 - **The remaining `pipeline/*.py` stage functions raise
@@ -191,10 +191,10 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
      controlled, NOT by downscaling the source scan. The 400 DPI color
      source is the archival "source of truth" and should never be
      pre-shrunk before this point.
-   - **Known infra gap:** `--optimize 3` needs `pngquant`, which isn't
-     in the Dockerfile yet (confirmed by running this locally without
-     it — a hard failure). Needs adding before this stage works in the
-     real container.
+   - `--optimize 3` needs `pngquant`, which is now in the Dockerfile
+     alongside `ghostscript`/`tesseract-ocr`/`qpdf` (was missing at
+     first — a hard failure, confirmed by running this locally without
+     it before adding it and re-verifying in a rebuilt container).
 
 7. **Validate — veraPDF** — confirms actual PDF/A compliance. If validation
    fails, the file does NOT proceed to the output folder. It's moved to a

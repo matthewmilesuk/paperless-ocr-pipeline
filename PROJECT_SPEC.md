@@ -112,13 +112,13 @@ that remains Paperless-NGX's job once the file lands in its watch folder.
      controlled, NOT by downscaling the source scan. The 400 DPI color
      source is the archival "source of truth" and should never be
      pre-shrunk before this point.
-   - **Known infra gap:** `--optimize 3` requires `pngquant`, which is
-     not currently installed in the Dockerfile (confirmed by actually
-     running this locally without it — hard failure, not a soft
-     warning). `jbig2` is also recommended for this optimize level but
-     only produces a warning, not a failure, if missing. `pngquant`
-     needs adding to the Dockerfile before this stage will actually work
-     end to end in the container.
+   - `--optimize 3` requires `pngquant`, in the Dockerfile alongside
+     `ghostscript`/`tesseract-ocr`/`qpdf` (confirmed missing at first —
+     a hard failure, not a soft warning — by actually running this
+     locally without it; added and re-verified in both a local venv and
+     a rebuilt container). `jbig2` is also recommended for this optimize
+     level but only produces a warning, not a failure, if missing —
+     not currently installed, lower priority.
 
 7. **Validate — veraPDF** — confirms actual PDF/A compliance. If validation
    fails, the file does NOT proceed to the output folder. It's moved to a

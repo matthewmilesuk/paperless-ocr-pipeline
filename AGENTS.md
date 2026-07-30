@@ -209,11 +209,13 @@ five are implemented and tested (`pipeline/tests.py`).
   job now; see above for why it can't happen here). `--skip-text` is
   required, not optional — without it ocrmypdf aborts on the first page
   it finds with existing text, and every page has one by this point.
-  **Known infra gap**: `--optimize 3` requires `pngquant`, confirmed
-  missing from the Dockerfile (a hard failure, verified by actually
-  running this without it locally) — needs adding before this stage
-  works in the real container. `jbig2` is also recommended for this
-  optimize level but only warns, doesn't fail, if missing.
+  `--optimize 3` requires `pngquant`, which was missing from the
+  Dockerfile at first (a hard failure, not a soft warning — confirmed by
+  actually running this without it) and has since been added there
+  alongside `ghostscript`/`tesseract-ocr`/`qpdf`, re-verified in a
+  rebuilt container. `jbig2` is also recommended for this optimize level
+  but only warns, doesn't fail, if missing — not installed, lower
+  priority than `pngquant` was.
 
 `pipeline/split.py` was removed (see `PROJECT_SPEC.md` pipeline stage
 list) — it rasterized pages for the *old* per-page-image OCR design.
