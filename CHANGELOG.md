@@ -7,7 +7,58 @@ Versioning is semantic-ish and appropriate to a pre-1.0, single-developer
 scaffold — a MINOR bump per meaningful milestone, PATCH reserved for fixes
 within one.
 
+## [0.7.0] - 2026-07-30
+
+`pipeline/reassemble.py` is implemented and tested; `pipeline/split.py`
+is removed.
+
+### Removed
+- `pipeline/split.py` — rasterized the cleaned PDF into per-page images
+  for the *old* per-page-image OCR design. Investigated whether
+  `reassemble.py` actually needed those images now that `ocr.py` sends
+  the whole cleaned PDF to Document AI in one call: it doesn't.
+  Document AI's `normalized_vertices` are resolution-independent
+  fractions of the page, and `cleanup.py` only ever deletes pages (never
+  rasterizes ones it keeps), so the cleaned PDF's own pages are already
+  the original scan content at full quality — nothing needed the
+  rasterized copies. `run.py`, `reassemble.py`'s signature, and the
+  pipeline stage list in `AGENTS.md`/`PROJECT_SPEC.md`/`README.md`
+  (renumbered) updated to match.
+
+### Added
+- `pipeline/reassemble.py` — overlays Document AI's recognized text as
+  an invisible (Tr 3) layer directly onto the cleaned PDF's own pages
+  via `pikepdf.Page.add_overlay()`, per token, positioned from
+  `normalized_vertices` against each page's actual MediaBox size (read
+  via `pikepdf`, not trusted from Document AI's own Dimension field).
+  Handles page `/Rotate` explicitly via a derived coordinate transform
+  (`_visual_to_raw` / `_text_draw_rotation`), since `/Rotate` is applied
+  by the viewer on top of the raw content stream rather than baked into
+  it. Verified three ways: fixed-point checks against the derived
+  formulas, and real poppler rasterization confirming a token lands in
+  the visually-correct image quadrant for all four rotation values —
+  **not** verified against a real Document AI response for an actually-
+  rotated scan, which would need a real, billable API call that hasn't
+  been made (flagged in the module docstring and `AGENTS.md`). Document
+  AI's per-element `orientation` field (text detected as sideways within
+  an otherwise-upright page) is out of scope — only page-level `/Rotate`
+  is handled.
+- `pipeline/tests.py` — 7 new tests: fixed-point transform checks, the
+  poppler-rendering rotation check (0/90/180/270, two corners each),
+  end-to-end overlay producing genuinely extractable text, page order
+  preserved across a multi-page document (verified per-page), and a
+  page-count-mismatch safety check.
+- `reportlab` — new pinned dependency, generates the text-overlay layer.
+
+### Changed
+- `README.md`'s Status section, which had gone stale across the
+  `cleanup.py`/`ocr.py` sessions (still listed both as
+  `NotImplementedError` stubs) — corrected alongside this pass since it
+  directly overlapped with what was already being touched.
+
 ## [0.6.0] - 2026-07-30
+
+First pipeline stage calling a live external API: `pipeline/ocr.py`
 
 First pipeline stage calling a live external API: `pipeline/ocr.py`
 (Google Document AI) is implemented and tested, no longer a stub.
